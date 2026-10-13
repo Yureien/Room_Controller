@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"name": "IRrecvDumpV2",
+			"path": "../IRremoteESP8266/examples/IRrecvDumpV2"
+		}
+	],
+	"settings": {}
+}
