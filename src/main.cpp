@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cmath>
 #include "web_ui.h"
+#include "lotus_lamp.h"
 
 const uint16_t kIrLed = 23;
 const uint8_t kTemperaturePin = 22;
@@ -39,6 +40,7 @@ struct SavedAcState {
 };
 
 IRBluestarAc ac(kIrLed);
+LotusLampController lamp;
 WebServer server(80);
 Preferences storage;
 NetworkSettings settings{};
@@ -360,6 +362,9 @@ void printHelp() {
   Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
   Serial.println(F("  wifi forget"));
   Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));
+  Serial.println(F("  lamp scan / lamp pair <number> / lamp status / lamp forget"));
+  Serial.println(F("  lamp reconnect / lamp on / lamp off / lamp color <name|#RRGGBB>"));
+  Serial.println(F("  lamp brightness 0..100 / lamp effect 0..212 / lamp speed 0..100"));
 }
 
 void printState() {
@@ -558,7 +563,7 @@ String jsonString(const String &value) {
 
 String stateJson(const String &message = "", const bool ok = true) {
   String result;
-  result.reserve(512);
+  result.reserve(1100);
   result = "{\"ok\":";
   result += ok ? "true" : "false";
   result += ",\"message\":" + jsonString(message);
@@ -579,7 +584,8 @@ String stateJson(const String &message = "", const bool ok = true) {
   result += ",\"turbo\":" + String(ac.getTurbo() ? "true" : "false");
   result += ",\"econo\":" + String(ac.getEcono() ? "true" : "false");
   result += ",\"sleep\":" + String(ac.getSleep() ? "true" : "false");
-  result += ",\"sent\":" + String(commandsSent) + "}";
+  result += ",\"sent\":" + String(commandsSent);
+  result += ",\"lamp\":" + lamp.json() + "}";
   return result;
 }
 
@@ -616,6 +622,20 @@ void configureWebServer() {
       Serial.println(command);
       printState();
     }
+  });
+  server.on("/api/lamp/command", HTTP_POST, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    const String origin = server.header("Origin");
+    if (origin.length() && origin != "http://" + server.hostHeader()) {
+      server.send(403, "application/json", stateJson("Use the controller page.", false));
+      return;
+    }
+    const String command = server.arg("command");
+    String message;
+    const bool ok = command.length() > 0 && command.length() <= 100 &&
+        lamp.command(command, false, message);
+    if (!message.length()) message = "Invalid lamp command.";
+    server.send(ok ? 202 : 400, "application/json", stateJson(message, ok));
   });
   server.on("/favicon.ico", HTTP_GET, []() { server.send(204); });
   server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
@@ -715,6 +735,14 @@ void processSerialCommand(String line) {
     printTemperature();
     return;
   }
+  if (command == "lamp") {
+    value.toLowerCase();
+    String message;
+    lamp.command(value, true, message);
+    Serial.println(message);
+    if (!value.length() || value == "status") lamp.printStatus();
+    return;
+  }
   String message;
   if (executeAcCommand(line, &message)) {
     Serial.println(message);
@@ -782,6 +810,7 @@ void setup() {
   beginTemperature();
   loadSettings();
   loadAcState();
+  lamp.begin();
   configureWebServer();
   printHelp();
   printState();
@@ -792,6 +821,7 @@ void setup() {
 
 void loop() {
   readSerial();
+  lamp.service(setupStep == SetupStep::None);
   serviceTemperature();
   serviceNetwork();
   delay(1);

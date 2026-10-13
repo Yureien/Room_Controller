@@ -156,3 +156,91 @@ are not implemented; their raw fields remain preserved.
 The web API uses `GET /api/state` and `POST /api/command` with a URL-encoded
 `command` field. Serial and web use the same validated AC command handler.
 Wi-Fi credentials are never included in web responses.
+
+## Lotus Lamp LED strip
+
+The firmware ports the BLE commands from
+[wporter82/lotus-lamp-python](https://github.com/wporter82/lotus-lamp-python)
+to Arduino C++ using NimBLE-Arduino. Python or a separate computer is not
+needed when controlling the strip. Source attribution and the upstream MIT
+license are in `THIRD_PARTY_NOTICES.md`.
+
+Close/disconnect the phone's Lotus Lamp app before setup; the strip may allow
+only one Bluetooth connection. Power the strip, open serial, then run:
+
+```text
+lamp scan
+```
+
+After the eight-second scan, serial prints a numbered list of connectable
+Bluetooth devices, with probable lamps first. Select your strip by its name:
+
+```text
+lamp pair 1
+lamp status
+```
+
+Replace `1` with its number in your scan. The firmware connects and discovers
+a writable characteristic, preferring the standard `FFF0` service / `FFF3`
+characteristic. It saves the address, BLE address type, name and discovered
+UUIDs in a separate NVS entry. Supported Lotus Lamp devices do not require a
+PIN or BLE bond; `pair` selects and remembers the device. If there are multiple
+possible write characteristics, serial lists their service/characteristic
+UUIDs. Select them explicitly using full UUIDs:
+
+```text
+lamp pair 1 0000fff0-0000-1000-8000-00805f9b34fb 0000fff3-0000-1000-8000-00805f9b34fb
+```
+
+The saved strip reconnects after boot, without replaying colors, effects or
+power commands. Last requested settings are also saved after successful BLE
+writes and displayed on the page. Bluetooth work runs on its own worker task;
+scan/connect/write operations do not block the serial/web AC command loop.
+If a connection is lost, the next light command attempts to reconnect. Failed
+writes are reported and never automatically resent.
+
+The existing web page includes On/Off, ten preset colors, a browser color
+picker, brightness, 213 effect selections and animation speed. Adjusting a
+picker, slider or effect selection does not transmit until you click Apply.
+Preset color and On/Off buttons send immediately. The page shows connection
+and operation status; it reports the controller's last requested values, not
+readback from the strip or changes from another remote/app. Effect names are
+from the upstream model and may vary with your strip.
+
+Serial control also remains available:
+
+```text
+lamp on
+lamp color red
+lamp color #ff8000
+lamp brightness 60
+lamp effect 143
+lamp speed 50
+lamp off
+lamp reconnect
+lamp status
+lamp forget
+```
+
+Brightness/speed range from 0 to 100. Documented effects range from 0 to 212;
+0 uses the documented Auto Play packet (the Python method currently clamps
+0 to 1 despite listing Auto Play as 0). Selecting a color leaves animation
+mode. Setup, device selection, UUID overrides and `lamp forget` are serial-only.
+Forgetting the strip does not erase Wi-Fi or AC settings. If the strip's BLE
+address changes, scan and select it again.
+
+`POST /api/lamp/command` accepts a URL-encoded `command` such as `color red`.
+A 202 response means accepted for asynchronous processing; `GET /api/state`
+contains the nested `lamp` status, completion counter and eventual result.
+A successful write without response means the BLE stack accepted the packet;
+there is no optical/device acknowledgement of the chosen setting.
+
+Protocol checks can run on a host with Python 3 and g++:
+
+```sh
+python3 test/test_lotus_protocol.py
+python3 test/test_lotus_protocol.py --reference /path/to/lotus-lamp-python
+```
+
+The optional reference check compares the C++ packets with the upstream
+Python command methods without installing or using Bluetooth dependencies.
