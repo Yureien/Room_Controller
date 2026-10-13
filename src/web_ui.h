@@ -10,7 +10,7 @@ const char kControlPage[] PROGMEM = R"HTML(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#153744">
-  <title>Room controls</title>
+  <title>Room Controller</title>
   <style>
     :root { color-scheme: light; --ink:#193944; --muted:#677b83;
       --accent:#087d8c; --line:#dce5e8; --paper:#fdfefe; }
@@ -29,6 +29,7 @@ const char kControlPage[] PROGMEM = R"HTML(
     .connected .dot { background:#1a9a68; }
     .remote { border:1px solid #d7e1e5; border-radius:28px; padding:22px;
       background:var(--paper); box-shadow:0 16px 40px #1939440c; }
+    .section-title { margin:0 0 14px; font-size:18px; }
     .screen { padding:18px 20px; border-radius:17px; background:#e7f0ed;
       border:1px solid #d7e4df; min-height:160px; }
     .screen-top { display:flex; justify-content:space-between;
@@ -112,12 +113,13 @@ const char kControlPage[] PROGMEM = R"HTML(
 <body>
   <main>
     <header>
-      <div><p class="eyebrow">AC remote</p><h1>Blue Star</h1></div>
+      <div><p class="eyebrow">AC · Temperature · Lights</p><h1>Room Controller</h1></div>
       <div id="connection" class="connection" role="status">
         <span class="dot"></span><span id="connection-text">Connecting</span>
       </div>
     </header>
     <section class="remote" aria-label="Air conditioner remote">
+      <h2 class="section-title">Blue Star AC</h2>
       <div class="screen" aria-label="Controller settings">
         <div class="screen-top">
           <span id="mode">Cool</span><span id="power-state" class="power-state">Off</span>

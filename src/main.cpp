@@ -1,4 +1,4 @@
-// Blue Star IE318YKU controller: serial setup and a local Wi-Fi remote.
+// Room Controller: AC infrared, temperature sensing, and BLE lighting.
 // No IR commands are transmitted at boot or when restoring Wi-Fi settings.
 
 #include <Arduino.h>
@@ -180,6 +180,7 @@ bool validSettings(const NetworkSettings &value) {
 void loadSettings() {
   settings.version = kSettingsVersion;
   snprintf(settings.hostname, sizeof(settings.hostname), "esp32");
+  // Keep the legacy NVS namespace so existing settings survive the rename.
   storageReady = storage.begin("ac-controller", false);
   if (!storageReady) {
     Serial.println(F("Flash storage unavailable; Wi-Fi and AC settings cannot save."));
@@ -348,8 +349,10 @@ void handleSetupInput(const String &line) {
 }
 
 void printHelp() {
-  Serial.print(F("Blue Star remote, GPIO "));
+  Serial.print(F("Room Controller, IR GPIO "));
   Serial.print(kIrLed);
+  Serial.print(F(", temperature GPIO "));
+  Serial.print(kTemperaturePin);
   Serial.println(F(", 115200 8-N-1. Commands:"));
   Serial.println(F("  on / off / power toggle / temp 16..30|up|down"));
   Serial.println(F("  mode auto|cool|dry|fan|next"));
