@@ -15,6 +15,7 @@ class LotusLampController {
   bool command(String line, bool allowSetup, String &message);
   String json() const;
   void printStatus() const;
+  bool needsFastCpu() const { return busy_ || radioActive_.load(); }
 
  private:
   static constexpr uint32_t kVersion = 1;
@@ -31,7 +32,7 @@ class LotusLampController {
     int8_t rssi;
     bool likely;
   };
-  enum class Operation : uint8_t { Scan, Pair, Connect, Forget, Control };
+  enum class Operation : uint8_t { Scan, Pair, Connect, Disconnect, Forget, Control };
   struct Job {
     Operation operation;
     Settings settings;
@@ -57,6 +58,7 @@ class LotusLampController {
   uint32_t completed_ = 0;
   QueueHandle_t jobs_ = nullptr, results_ = nullptr;
   std::atomic<bool> connected_{false};
+  std::atomic<bool> radioActive_{false};
 
   static Settings defaults();
   static bool validSettings(const Settings &value);

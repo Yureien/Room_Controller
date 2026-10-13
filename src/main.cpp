@@ -11,20 +11,32 @@
 #include <IRremoteESP8266.h>
 #include <ir_Bluestar.h>
 #include <esp_system.h>
+#include <esp_timer.h>
+#include <esp_pm.h>
+#include <esp_sleep.h>
+#include <esp_wifi.h>
+#include <driver/uart.h>
 #include <cstdio>
 #include <cstring>
 #include <cmath>
 #include "web_ui.h"
 #include "lotus_lamp.h"
+#include "temperature_history.h"
 
 const uint16_t kIrLed = 23;
 const uint8_t kTemperaturePin = 22;
-const uint32_t kTemperatureInterval = 5000;
+const uint8_t kActivityLedPin = 2;  // NodeMCU-32S blue user LED.
+const uint8_t kActivityLedOnLevel = HIGH;  // Reference board is active-high.
+const uint32_t kTemperatureInterval = 30000;
 const uint32_t kTemperatureConversionTime = 750;  // DS18B20 at 12-bit resolution.
 const uint32_t kSettingsVersion = 1;
 const uint32_t kAcStateVersion = 1;
 const uint32_t kConnectTimeout = 15000;
 const uint32_t kReconnectInterval = 30000;
+
+#if !CONFIG_PM_ENABLE || !CONFIG_FREERTOS_USE_TICKLESS_IDLE
+#error "Automatic light sleep requires the Arduino + ESP-IDF build and sdkconfig.defaults"
+#endif
 
 struct NetworkSettings {
   uint32_t version;
@@ -49,6 +61,12 @@ bool networkUp = false;
 bool connecting = false;
 uint32_t connectionStarted = 0;
 uint32_t commandsSent = 0;
+uint32_t lastUserActivity = 0;
+bool cpuBoosted = false;
+bool powerManagementReady = false;
+esp_pm_lock_handle_t cpuLock = nullptr, awakeLock = nullptr;
+uint32_t lastSerialActivity = 0;
+bool haveSerialActivity = false;
 SavedAcState lastSavedAcState{};
 bool haveSavedAcState = false;
 uint8_t normalFan = kBluestarFanLow;
@@ -66,6 +84,60 @@ bool sensorPresent = false;
 bool sensorConverting = false;
 uint32_t temperatureStarted = 0;
 float measuredTemperature = 0;
+uint32_t measuredTemperatureSeconds = 0;
+TemperatureHistory temperatureHistory;
+
+void acquireActivePower() {
+  if (powerManagementReady && !cpuBoosted) {
+    esp_pm_lock_acquire(cpuLock);
+    esp_pm_lock_acquire(awakeLock);
+    cpuBoosted = true;
+    digitalWrite(kActivityLedPin, kActivityLedOnLevel);
+  }
+}
+
+void boostCpu() {
+  lastUserActivity = millis();
+  acquireActivePower();
+}
+
+void beginPowerManagement() {
+  // Locks preserve 240 MHz and prevent sleep during IR, BLE, and setup. Keep
+  // APB at 80 MHz even at the minimum CPU speed for UART and OneWire timing.
+  esp_err_t error = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "controls", &cpuLock);
+  if (error == ESP_OK)
+    error = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "controls", &awakeLock);
+  if (error == ESP_OK) error = uart_set_wakeup_threshold(UART_NUM_0, 3);
+  if (error == ESP_OK) error = esp_sleep_enable_uart_wakeup(UART_NUM_0);
+  const esp_pm_config_esp32_t config = {240, 80, true};
+  if (error == ESP_OK) error = esp_pm_configure(&config);
+  if (error != ESP_OK) {
+    // SDK startup frequency is 240 MHz. Leave it alone if PM cannot start.
+    if (cpuLock) { esp_pm_lock_delete(cpuLock); cpuLock = nullptr; }
+    if (awakeLock) { esp_pm_lock_delete(awakeLock); awakeLock = nullptr; }
+    Serial.printf("[power] Automatic light sleep unavailable: %s\n", esp_err_to_name(error));
+    return;
+  }
+  powerManagementReady = true;
+  boostCpu();
+  Serial.println(F("[power] Automatic light sleep; CPU 80..240 MHz; Wi-Fi MIN_MODEM"));
+  Serial.println(F("[power] Press Enter before serial commands after idle; serial stays awake for 60s."));
+}
+
+void serviceCpuPower() {
+  if (!powerManagementReady) return;
+  if (setupStep != SetupStep::None || connecting || lamp.needsFastCpu() ||
+      (haveSerialActivity && millis() - lastSerialActivity < 60000)) {
+    acquireActivePower();
+  } else if (cpuBoosted && millis() - lastUserActivity >= 5000) {
+    // The IDF scheduler/drivers now manage DFS and automatic light sleep;
+    // never manually change CPU clocks behind their power locks.
+    esp_pm_lock_release(awakeLock);
+    esp_pm_lock_release(cpuLock);
+    cpuBoosted = false;
+    digitalWrite(kActivityLedPin, !kActivityLedOnLevel);
+  }
+}
 
 const char *sensorStatusName() {
   switch (sensorStatus) {
@@ -125,6 +197,7 @@ void serviceTemperature() {
     const float reading = temperatureSensor.getTempC(temperatureAddress);
     if (std::isfinite(reading) && reading >= -55 && reading <= 125) {
       measuredTemperature = reading;
+      measuredTemperatureSeconds = esp_timer_get_time() / 1000000;
       sensorStatus = SensorStatus::Ready;
     } else {
       sensorPresent = false;
@@ -266,6 +339,7 @@ void stopNetworkServices() {
 }
 
 void connectWifi() {
+  boostCpu();
   stopNetworkServices();
   WiFi.disconnect(true, false);
   connecting = false;
@@ -275,6 +349,10 @@ void connectWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(settings.ssid, settings.password);
+  // Sleep between DTIM beacons while preserving multicast/mDNS reception.
+  const esp_err_t error = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  if (error != ESP_OK)
+    Serial.printf("Wi-Fi modem sleep setup failed: %s\n", esp_err_to_name(error));
   connectionStarted = millis();
   connecting = true;
   Serial.print(F("Connecting to Wi-Fi: "));
@@ -361,12 +439,13 @@ void printHelp() {
   Serial.println(F("  horizontal|vertical|light|turbo|econo|sleep"));
   Serial.println(F("    on|off|toggle"));
   Serial.println(F("  state / send / load <24 hexadecimal digits> / help"));
-  Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
+  Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 30s)"));
   Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
   Serial.println(F("  wifi forget"));
   Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));
   Serial.println(F("  lamp scan / lamp pair <number> / lamp status / lamp forget"));
-  Serial.println(F("  lamp reconnect / lamp on / lamp off / lamp color <name|#RRGGBB>"));
+  Serial.println(F("  lamp connect / lamp reconnect / lamp disconnect / lamp on / lamp off"));
+  Serial.println(F("  lamp color <name|#RRGGBB>"));
   Serial.println(F("  lamp brightness 0..100 / lamp effect 0..212 / lamp speed 0..100"));
 }
 
@@ -534,6 +613,8 @@ bool executeAcCommand(String line, String *message) {
     return false;
   }
   if (transmit) {
+    // Preserve the software IR carrier's original CPU timing during sends.
+    boostCpu();
     ac.send();
     commandsSent++;
     *message = "Command sent.";
@@ -579,6 +660,7 @@ String stateJson(const String &message = "", const bool ok = true) {
   result += sensorStatus == SensorStatus::Ready ?
       String(measuredTemperature, 2) : String("null");
   result += ",\"sensorStatus\":" + jsonString(String(sensorStatusName()));
+  result += ",\"sensorIntervalSeconds\":" + String(kTemperatureInterval / 1000);
   result += ",\"fan\":" + String(ac.getFan());
   result += ",\"capacity\":" + String(ac.getCapacity());
   result += ",\"horizontal\":" + String(ac.getSwingH() ? "true" : "false");
@@ -592,18 +674,49 @@ String stateJson(const String &message = "", const bool ok = true) {
   return result;
 }
 
+void sendTemperatureHistory() {
+  boostCpu();
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  char chunk[256];
+  size_t used = snprintf(chunk, sizeof(chunk),
+      "{\"interval\":%lu,\"age\":%lu,\"samples\":[",
+      static_cast<unsigned long>(TemperatureHistory::kIntervalSeconds),
+      static_cast<unsigned long>(temperatureHistory.age(esp_timer_get_time() / 1000000)));
+  for (uint16_t i = 0; i < temperatureHistory.count(); i++) {
+    // A sample needs at most 8 characters plus its comma. Flush bounded chunks.
+    if (used + 16 >= sizeof(chunk)) {
+      server.sendContent(chunk, used);
+      used = 0;
+    }
+    const int16_t value = temperatureHistory.sample(i);
+    if (value == TemperatureHistory::kMissing)
+      used += snprintf(chunk + used, sizeof(chunk) - used, "%snull", i ? "," : "");
+    else
+      used += snprintf(chunk + used, sizeof(chunk) - used, "%s%.2f", i ? "," : "", value / 100.0);
+  }
+  server.sendContent(chunk, used);
+  server.sendContent("]}");
+  server.sendContent("");
+}
+
 void configureWebServer() {
   const char *headers[] = {"Origin"};
   server.collectHeaders(headers, 1);
   server.on("/", HTTP_GET, []() {
+    boostCpu();
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", kControlPage);
   });
   server.on("/api/state", HTTP_GET, []() {
+    boostCpu();
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", stateJson());
   });
+  server.on("/api/temperature/history", HTTP_GET, sendTemperatureHistory);
   server.on("/api/command", HTTP_POST, []() {
+    boostCpu();
     server.sendHeader("Cache-Control", "no-store");
     const String origin = server.header("Origin");
     if (origin.length() && origin != "http://" + server.hostHeader()) {
@@ -627,6 +740,7 @@ void configureWebServer() {
     }
   });
   server.on("/api/lamp/command", HTTP_POST, []() {
+    boostCpu();
     server.sendHeader("Cache-Control", "no-store");
     const String origin = server.header("Origin");
     if (origin.length() && origin != "http://" + server.hostHeader()) {
@@ -670,6 +784,7 @@ void serviceNetwork() {
     Serial.println(F("Wi-Fi not connected. Try wifi setup."));
   }
   if (elapsed >= kReconnectInterval) {
+    boostCpu();
     WiFi.reconnect();
     connectionStarted = millis();
     connecting = true;
@@ -678,6 +793,7 @@ void serviceNetwork() {
 }
 
 void processSerialCommand(String line) {
+  boostCpu();
   if (setupStep != SetupStep::None) {
     handleSetupInput(line);  // Preserve case and spaces in credentials.
     return;
@@ -760,6 +876,29 @@ void readSerial() {
   static size_t length = 0;
   static bool overflow = false;
   static bool previousCr = false;
+  static bool uartWakeHandled = false;
+  const bool uartWake = powerManagementReady &&
+      esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART;
+  if ((uartWake && !uartWakeHandled) || Serial.available()) {
+    const bool serialWasIdle = !haveSerialActivity || millis() - lastSerialActivity >= 60000;
+    lastSerialActivity = millis();
+    haveSerialActivity = true;
+    boostCpu();
+    if (uartWake && !uartWakeHandled) {
+      // UART wake-up loses characters. Discard the wake input so a truncated
+      // "lamp off", for example, cannot be interpreted as an AC "off" command.
+      // The serial monitor sends a complete line at 115200; let it finish first.
+      delay(20);
+      uart_flush_input(UART_NUM_0);
+      std::memset(line, 0, sizeof(line));
+      length = 0;
+      overflow = previousCr = false;
+    }
+    if (powerManagementReady && setupStep == SetupStep::None &&
+        (serialWasIdle || (uartWake && !uartWakeHandled)))
+      Serial.println(F("Serial awake. Enter your command."));
+  }
+  uartWakeHandled = uartWake;
   // A noisy or continuously active serial port must not starve the main loop.
   size_t processed = 0;
   while (Serial.available() && processed++ < 64) {
@@ -803,12 +942,17 @@ const char *resetReasonName(const esp_reset_reason_t reason) {
 }
 
 void setup() {
+  // Boot is active work at the SDK's 240 MHz startup frequency. Initialize the
+  // output level before enabling it to avoid an unwanted LED glitch.
+  digitalWrite(kActivityLedPin, kActivityLedOnLevel);
+  pinMode(kActivityLedPin, OUTPUT);
   Serial.begin(115200, SERIAL_8N1);
   // Let the USB/serial monitor settle before printing startup text.
   delay(300);
   const esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("\n[boot] reset=%s (%d)\n", resetReasonName(reason),
                 static_cast<int>(reason));
+  beginPowerManagement();
   ac.begin();
   beginTemperature();
   loadSettings();
@@ -826,6 +970,15 @@ void loop() {
   readSerial();
   lamp.service(setupStep == SetupStep::None);
   serviceTemperature();
+  if (sensorStatus != SensorStatus::Waiting) {
+    const uint32_t now = esp_timer_get_time() / 1000000;
+    // A stalled/slow web client must not turn an old reading into a fresh sample.
+    const bool fresh = now - measuredTemperatureSeconds <=
+        (kTemperatureInterval + kTemperatureConversionTime) / 1000 + 1;
+    temperatureHistory.record(now, sensorStatus == SensorStatus::Ready && fresh,
+                              measuredTemperature);
+  }
   serviceNetwork();
-  delay(1);
+  serviceCpuPower();
+  delay(20);
 }

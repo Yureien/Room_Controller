@@ -103,6 +103,11 @@ const char kControlPage[] PROGMEM = R"HTML(
     #lamp-feedback { margin:15px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
     #lamp-feedback.error { color:#b23c3c; }
     .lamp-note { font-size:10px; color:var(--muted); line-height:1.5; margin:10px 0 0; }
+    .history { margin-top:18px; padding:20px; border:1px solid #d7e1e5;
+      border-radius:24px; background:var(--paper); }
+    .history h2 { margin:0 0 12px; font-size:18px; }
+    #temperature-chart { display:block; width:100%; height:180px; }
+    #history-status { font-size:11px; color:var(--muted); line-height:1.5; }
     footer { margin:17px 8px; text-align:center; font-size:11px;
       line-height:1.6; color:var(--muted); }
     #address { display:block; margin-top:6px; color:#49636d; }
@@ -156,13 +161,22 @@ const char kControlPage[] PROGMEM = R"HTML(
       <p id="feedback" role="status" aria-live="polite">Loading controller settings…</p>
       <button class="send-again" data-command="send">Send again</button>
     </section>
+    <section class="history" aria-label="Temperature history">
+      <h2>Room temperature</h2>
+      <canvas id="temperature-chart" role="img" aria-label="Temperature history in degrees Celsius">
+        Temperature graph requires a browser with canvas support.
+      </canvas>
+      <p id="history-status" role="status">Loading temperature history…</p>
+      <p class="lamp-note">One sample per minute · Last 24 hours · History resets on restart.</p>
+    </section>
     <section class="lamp" aria-label="LED light strip">
       <div class="lamp-head"><h2>LED strip</h2><span id="lamp-link" role="status">Not set up</span></div>
       <p id="lamp-name">Select your strip over serial.</p>
       <div class="lamp-power">
         <button id="lamp-on" data-lamp-command="on" aria-pressed="false">On</button>
         <button id="lamp-off" data-lamp-command="off" aria-pressed="false">Off</button>
-        <button data-lamp-command="reconnect">Reconnect</button>
+        <button id="lamp-connect" data-lamp-command="reconnect">Connect</button>
+        <button id="lamp-disconnect" data-lamp-command="disconnect">Disconnect</button>
       </div>
       <div class="palette" aria-label="Preset colors">
         <button class="swatch" style="background:#ff0000" data-lamp-command="color #ff0000" title="Red" aria-label="Red" aria-pressed="false"></button>
@@ -427,7 +441,8 @@ const char kControlPage[] PROGMEM = R"HTML(
         <button id="lamp-speed-apply">Apply</button>
       </div>
       <p id="lamp-feedback" role="status" aria-live="polite">Set up over serial: lamp scan, then lamp pair &lt;number&gt;.</p>
-      <p class="lamp-note">Controls show the last requested settings. Effect names may vary by strip.</p>
+      <p class="lamp-note">Connects when you send a setting; Bluetooth sleeps after 30s idle.
+        Strip settings stay active. Controls show the last requested settings.</p>
     </section>
     <footer>
       Settings reflect this controller. Changes made with the physical remote<br>
@@ -441,6 +456,89 @@ const char kControlPage[] PROGMEM = R"HTML(
     const modes = {1:'Fan only',2:'Auto',4:'Dry',8:'Cool'};
     const fans = {0:'High',1:'High',2:'Medium',4:'Low',7:'Auto'};
     const capacities = {1:110,2:80,3:60,4:40,5:100};
+    let historyData = null;
+    let historyReceived = 0;
+    let historyLoading = false;
+
+    function drawHistory() {
+      const canvas = $('temperature-chart');
+      const width = canvas.clientWidth;
+      const height = 180;
+      if (!width) return;
+      const scale = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * scale);
+      canvas.height = Math.round(height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.scale(scale, scale);
+      ctx.font = '11px system-ui';
+      ctx.fillStyle = '#677b83';
+      const data = historyData && historyData.samples;
+      const valid = data ? data.filter(Number.isFinite) : [];
+      if (!valid.length) {
+        ctx.fillText('Waiting for measured temperatures', 12, 85);
+        return;
+      }
+      const low = Math.floor(Math.min(...valid) - 0.5);
+      const high = Math.ceil(Math.max(...valid) + 0.5);
+      const left = 47, top = 12, right = width - 8, bottom = height - 30;
+      const x = i => left + i * (right - left) / Math.max(1, data.length - 1);
+      const y = v => bottom - (v - low) * (bottom - top) / (high - low);
+      for (let i = 0; i <= 2; i++) {
+        const v = low + (high - low) * i / 2;
+        ctx.strokeStyle = '#dce5e8';
+        ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(right, y(v)); ctx.stroke();
+        ctx.fillText(v.toFixed(1) + '°C', 0, y(v) + 4);
+      }
+      ctx.strokeStyle = '#087d8c'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      let joined = false;
+      data.forEach((v, i) => {
+        if (!Number.isFinite(v)) { joined = false; return; }
+        if (joined) ctx.lineTo(x(i), y(v)); else ctx.moveTo(x(i), y(v));
+        joined = true;
+      });
+      ctx.stroke();
+      // Mark individual samples too, so a lone reading or isolated point shows.
+      ctx.fillStyle = '#087d8c';
+      data.forEach((v, i) => {
+        if (!Number.isFinite(v)) return;
+        ctx.beginPath(); ctx.arc(x(i), y(v), 1.5, 0, Math.PI * 2); ctx.fill();
+      });
+      ctx.fillStyle = '#677b83';
+      const newest = historyReceived - historyData.age * 1000;
+      const label = time => new Date(time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      ctx.fillText(label(newest - (data.length - 1) * historyData.interval * 1000), left, height - 8);
+      ctx.textAlign = 'right'; ctx.fillText(label(newest), right, height - 8);
+      canvas.setAttribute('aria-label', valid.length + ' temperature readings, ' +
+        Math.min(...valid).toFixed(2) + ' to ' + Math.max(...valid).toFixed(2) + ' degrees Celsius');
+    }
+
+    async function requestHistory() {
+      if (historyLoading || document.hidden) return;
+      historyLoading = true;
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), 10000);
+      try {
+        const response = await fetch('/api/temperature/history', {cache:'no-store',signal:abort.signal});
+        const next = await response.json();
+        if (!response.ok || !Array.isArray(next.samples) || next.samples.length > 1440 ||
+            next.interval !== 60 || !Number.isFinite(next.age) ||
+            !next.samples.every(v => v === null || Number.isFinite(v))) throw new Error('Invalid history');
+        historyData = next;
+        historyReceived = Date.now();
+        const valid = next.samples.filter(Number.isFinite);
+        $('history-status').textContent = valid.length ? valid.length + ' readings · Min ' +
+          Math.min(...valid).toFixed(2) + '°C · Max ' + Math.max(...valid).toFixed(2) +
+          '°C · Gaps indicate missing readings.' : 'No readings yet. Check the sensor.';
+        drawHistory();
+      } catch (error) {
+        $('history-status').textContent = 'History unavailable. Retrying when the controller is reachable.';
+      } finally {
+        clearTimeout(timeout);
+        historyLoading = false;
+      }
+    }
     let state = null;
     let busy = false;
     let lampSending = false;
@@ -455,6 +553,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       for (const control of lampControls) {
         control.disabled = lampSending || !lamp || !lamp.configured || lamp.busy;
       }
+      $('lamp-disconnect').disabled ||= !lamp || !lamp.connected;
     }
 
     function renderLamp() {
@@ -465,7 +564,8 @@ const char kControlPage[] PROGMEM = R"HTML(
         lampPendingEdit = null;
       }
       $('lamp-link').textContent = lamp.busy ? 'Working…' :
-        !lamp.configured ? 'Not set up' : lamp.connected ? 'Connected' : 'Disconnected';
+        !lamp.configured ? 'Not set up' : lamp.connected ? 'Connected' : 'Sleeping';
+      $('lamp-connect').textContent = lamp.connected ? 'Reconnect' : 'Connect';
       $('lamp-name').textContent = lamp.configured ? (lamp.name || 'LED strip') + ' · ' + lamp.address :
         'Select your strip over serial.';
       for (const [id, value] of [['lamp-color',lamp.color],['lamp-brightness',lamp.brightness],
@@ -487,7 +587,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       $('lamp-feedback').textContent = lampLocalError || lamp.message;
       $('lamp-feedback').classList.toggle('error', Boolean(lampLocalError) || !lamp.ok);
       clearTimeout(lampPollTimer);
-      if (lamp.busy) lampPollTimer = setTimeout(() => request(), 750);
+      if (lamp.busy && !document.hidden) lampPollTimer = setTimeout(() => request(), 750);
       updateLampControls();
     }
 
@@ -550,7 +650,7 @@ const char kControlPage[] PROGMEM = R"HTML(
         Number.isFinite(state.measuredTemperature);
       $('measured-temperature').textContent = sensorReady ?
         state.measuredTemperature.toFixed(2) + ' °C' : '--';
-      $('sensor-status').textContent = sensorReady ? 'DS18B20 · Updates every 5s' :
+      $('sensor-status').textContent = sensorReady ? 'DS18B20 · Updates every ' + state.sensorIntervalSeconds + 's' :
         (state.sensorStatus === 'waiting' ? 'Waiting for first reading' : 'Sensor unavailable');
       $('fan').textContent = 'Fan: ' + fan;
       $('fan-value').textContent = fan;
@@ -645,7 +745,14 @@ const char kControlPage[] PROGMEM = R"HTML(
     });
     updateButtons();
     request();
-    setInterval(() => request(), 5000);
+    requestHistory();
+    setInterval(() => { if (!document.hidden) request(); }, 30000);
+    setInterval(requestHistory, 60000);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) clearTimeout(lampPollTimer);
+      else { request(); requestHistory(); }
+    });
+    window.addEventListener('resize', drawHistory);
   </script>
 </body>
 </html>

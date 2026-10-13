@@ -69,12 +69,8 @@ void LotusLampController::begin() {
         validSettings(value)) {
       settings_ = saved_ = value;
       haveSaved_ = true;
-      Job job{};
-      job.operation = Operation::Connect;
-      job.settings = settings_;
-      String ignored;
-      // Connect only; do not replay light settings at boot.
-      if (!enqueue(job, ignored)) { message_ = ignored; lastOk_ = false; }
+      // Leave Bluetooth off until a command or explicit connection request.
+      message_ = "Strip saved. Connect or send a setting when needed; Bluetooth sleeps after 30s idle.";
     } else message_ = "Saved lamp device invalid; run lamp scan to set it up again.";
   }
 }
@@ -153,7 +149,8 @@ bool LotusLampController::command(String line, bool allowSetup, String &message)
         job.explicitUuid = true;
       }
     }
-  } else if (line == "reconnect") job.operation = Operation::Connect;
+  } else if (line == "reconnect" || line == "connect") job.operation = Operation::Connect;
+  else if (line == "disconnect") job.operation = Operation::Disconnect;
   else {
     job.operation = Operation::Control;
     if (!lotus::parse(line.c_str(), job.control)) {
@@ -162,7 +159,8 @@ bool LotusLampController::command(String line, bool allowSetup, String &message)
     }
   }
   if (job.operation != Operation::Scan && job.operation != Operation::Pair &&
-      job.operation != Operation::Forget && !settings_.address[0]) {
+      job.operation != Operation::Forget && job.operation != Operation::Disconnect &&
+      !settings_.address[0]) {
     message = "No lamp selected. Run lamp scan and lamp pair <number> over serial.";
     return false;
   }
@@ -178,23 +176,38 @@ void LotusLampController::worker() {
   NimBLERemoteCharacteristic *writer = nullptr;
   Settings active{};
   bool initialized = false;
+  uint32_t lastActivity = 0;
+  auto shutdown = [&]() {
+    if (client && client->isConnected()) client->disconnect();
+    writer = nullptr;
+    connected_.store(false);
+    // clearAll deletes clients and scan objects; never reuse their pointers.
+    if (initialized) NimBLEDevice::deinit(true);
+    client = nullptr;
+    initialized = NimBLEDevice::isInitialized();
+    radioActive_.store(initialized);
+    return !initialized;
+  };
   for (;;) {
     Job job{};
-    if (xQueueReceive(jobs_, &job, pdMS_TO_TICKS(250)) != pdTRUE) {
+    // Block indefinitely with the radio off. Wake only for a user request.
+    if (xQueueReceive(jobs_, &job, initialized ? pdMS_TO_TICKS(1000) : portMAX_DELAY) != pdTRUE) {
       connected_.store(client && client->isConnected() && writer);
+      if (!connected_.load() || millis() - lastActivity >= 30000) shutdown();
       continue;
     }
     Result result{};
     result.operation = job.operation;
     result.settings = job.settings;
     auto fail = [&](const char *message) { snprintf(result.message, sizeof(result.message), "%s", message); };
-    if (job.operation == Operation::Forget) {
-      if (client && client->isConnected()) client->disconnect();
-      writer = nullptr;
-      result.success = true;
-      fail("Lamp device forgotten.");
+    if (job.operation == Operation::Forget || job.operation == Operation::Disconnect) {
+      result.success = shutdown();
+      fail(!result.success ? "Bluetooth shutdown failed; retry Disconnect." :
+          job.operation == Operation::Forget ? "Lamp device forgotten." :
+          "Bluetooth disconnected; strip settings retained.");
     } else {
       if (!initialized) initialized = NimBLEDevice::init("");
+      radioActive_.store(initialized);
       if (!initialized) fail("Bluetooth initialization failed.");
       else if (job.operation == Operation::Scan) {
         if (client && client->isConnected()) client->disconnect();
@@ -307,6 +320,9 @@ void LotusLampController::worker() {
       }
     }
     connected_.store(client && client->isConnected() && writer);
+    lastActivity = millis();
+    // Scans and failed connections must not leave an idle radio running.
+    if (!connected_.load()) shutdown();
     xQueueOverwrite(results_, &result);
   }
 }
@@ -327,7 +343,7 @@ void LotusLampController::service(bool printEvents) {
       if (!storageReady_ || (storage_.isKey("settings") && !storage_.remove("settings"))) {
         lastOk_ = false; message_ = "Could not forget saved lamp; previous selection retained.";
       } else { settings_ = defaults(); haveSaved_ = false; }
-    } else {
+    } else if (result.operation != Operation::Disconnect) {
       settings_ = result.settings;
       if (!save()) { lastOk_ = false; message_ += " Warning: could not save lamp settings to flash."; }
     }
