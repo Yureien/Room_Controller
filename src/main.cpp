@@ -21,6 +21,7 @@ const uint8_t kTemperaturePin = 22;
 const uint32_t kTemperatureInterval = 5000;
 const uint32_t kTemperatureConversionTime = 750;  // DS18B20 at 12-bit resolution.
 const uint32_t kSettingsVersion = 1;
+const uint32_t kAcStateVersion = 1;
 const uint32_t kConnectTimeout = 15000;
 const uint32_t kReconnectInterval = 30000;
 
@@ -29,6 +30,12 @@ struct NetworkSettings {
   char ssid[33];
   char password[65];
   char hostname[64];
+};
+
+struct SavedAcState {
+  uint32_t version;
+  uint8_t raw[kBluestarStateLength];
+  uint8_t normalFan;  // Fan to restore when returning to 100% capacity.
 };
 
 IRBluestarAc ac(kIrLed);
@@ -40,6 +47,9 @@ bool networkUp = false;
 bool connecting = false;
 uint32_t connectionStarted = 0;
 uint32_t commandsSent = 0;
+SavedAcState lastSavedAcState{};
+bool haveSavedAcState = false;
+uint8_t normalFan = kBluestarFanLow;
 
 enum class SetupStep { None, Ssid, Password };
 SetupStep setupStep = SetupStep::None;
@@ -170,7 +180,7 @@ void loadSettings() {
   snprintf(settings.hostname, sizeof(settings.hostname), "esp32");
   storageReady = storage.begin("ac-controller", false);
   if (!storageReady) {
-    Serial.println(F("Flash storage unavailable; Wi-Fi settings cannot save."));
+    Serial.println(F("Flash storage unavailable; Wi-Fi and AC settings cannot save."));
     return;
   }
   NetworkSettings saved{};
@@ -187,6 +197,62 @@ bool saveSettings(const NetworkSettings &value) {
     return false;
   }
   settings = value;
+  return true;
+}
+
+bool validNormalFan(const uint8_t fan) {
+  return fan == kBluestarFanLow || fan == kBluestarFanMed ||
+      fan == kBluestarFanHigh || fan == kBluestarFanAuto;
+}
+
+uint8_t rememberedFan(const uint8_t fan) {
+  if (fan == kBluestarFanTurbo) return kBluestarFanHigh;
+  return validNormalFan(fan) ? fan : kBluestarFanAuto;
+}
+
+void loadAcState() {
+  if (!storageReady) return;
+  const size_t length = storage.getBytesLength("ac-state");
+  if (length == 0) return;  // First boot: keep the library defaults.
+  SavedAcState saved{};
+  if (length != sizeof(saved) ||
+      storage.getBytes("ac-state", &saved, sizeof(saved)) != sizeof(saved) ||
+      saved.version != kAcStateVersion || saved.raw[0] != 0x33 ||
+      saved.raw[10] > 7 || !IRBluestarAc::validChecksum(saved.raw) ||
+      !validNormalFan(saved.normalFan)) {
+    Serial.println(F("Saved AC state invalid or incompatible; using defaults."));
+    return;
+  }
+  ac.setRaw(saved.raw);
+  // Restore the native class's fan history as well as the current packet.
+  // setFan updates that history; copying the packet back preserves its active
+  // capacity override and original secondary command without transmitting.
+  ac.setFan(saved.normalFan);
+  std::memcpy(ac.getRaw(), saved.raw, sizeof(saved.raw));
+  normalFan = saved.normalFan;
+  lastSavedAcState = saved;
+  haveSavedAcState = true;
+  Serial.println(F("Restored saved AC settings; no IR sent."));
+}
+
+bool saveAcState() {
+  SavedAcState value{};
+  value.version = kAcStateVersion;
+  std::memcpy(value.raw, ac.getRaw(), sizeof(value.raw));
+  value.normalFan = normalFan;
+  // Avoid flash writes for polling, repeated sends, and unchanged settings.
+  if (haveSavedAcState && value.version == lastSavedAcState.version &&
+      value.normalFan == lastSavedAcState.normalFan &&
+      std::memcmp(value.raw, lastSavedAcState.raw, sizeof(value.raw)) == 0)
+    return true;
+  // Keep the complete state in one NVS entry, independently of Wi-Fi settings.
+  if (!storageReady ||
+      storage.putBytes("ac-state", &value, sizeof(value)) != sizeof(value)) {
+    Serial.println(F("Could not save AC settings; previous saved state retained."));
+    return false;
+  }
+  lastSavedAcState = value;
+  haveSavedAcState = true;
   return true;
 }
 
@@ -403,6 +469,7 @@ bool executeAcCommand(String line, String *message) {
       return false;
     }
     ac.setFan(fan);
+    normalFan = fan;
   } else if (command == "capacity") {
     uint8_t capacity;
     if (value == "100") {
@@ -421,6 +488,8 @@ bool executeAcCommand(String line, String *message) {
     } else {
       return false;
     }
+    if (ac.getCapacity() == kBluestarCapacityDefault)
+      normalFan = rememberedFan(ac.getFan());
     ac.setCapacity(capacity);
   } else if (command == "horizontal" || command == "vertical" ||
              command == "light" || command == "turbo" ||
@@ -443,11 +512,13 @@ bool executeAcCommand(String line, String *message) {
     else if (command == "turbo") ac.setTurbo(on);
     else if (command == "econo") ac.setEcono(on);
     else ac.setSleep(on);
+    if (command == "econo" && on) normalFan = kBluestarFanLow;
   } else if (command == "load") {
     if (!loadState(value)) {
       *message = "Invalid state length, hexadecimal value, or checksum.";
       return false;
     }
+    normalFan = rememberedFan(ac.getFan());
     transmit = false;
   } else if ((command == "state" || command == "send") && !value.length()) {
     transmit = command == "send";
@@ -462,6 +533,8 @@ bool executeAcCommand(String line, String *message) {
     *message = command == "load" ? "State loaded; use send to transmit." :
         "Current controller settings.";
   }
+  if ((transmit || command == "load") && !saveAcState())
+    *message += " Warning: AC settings could not be saved.";
   return true;
 }
 
@@ -708,6 +781,7 @@ void setup() {
   ac.begin();
   beginTemperature();
   loadSettings();
+  loadAcState();
   configureWebServer();
   printHelp();
   printState();

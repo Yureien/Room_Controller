@@ -19,6 +19,24 @@ startup prompt after opening the monitor. A `[boot] reset=...` line identifies
 resets. That line repeating indicates board resets rather than Wi-Fi retries.
 Blank lines at the SSID prompt are ignored without repeating the prompt.
 
+## Remembered AC settings
+
+The controller saves its AC state in ESP32 NVS after each accepted setting
+change from serial or the web page, including imported `load` states. Power,
+mode, temperature, fan, swing, light, Turbo, capacity, Energy Save and Sleep
+survive restarts and power loss. The fan selected before a capacity override
+is also remembered, so returning to 100% behaves the same after restarting.
+
+Startup restores the settings in the page and serial output without sending
+IR. Use a control button or `send` to transmit them. Missing, invalid, or
+incompatible saved data falls back to library defaults. Unchanged states and
+page refreshes do not write flash. If saving fails, serial/web command output
+reports the failure; the previously saved state is retained.
+
+AC settings are stored independently from Wi-Fi credentials, so `wifi forget`
+does not reset them. The controller remembers its own commands; it cannot
+observe changes made with the physical remote.
+
 ## First Wi-Fi setup
 
 On the first boot, serial prompts for your SSID and password. Enter each on
