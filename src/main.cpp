@@ -1,0 +1,724 @@
+// Blue Star IE318YKU controller: serial setup and a local Wi-Fi remote.
+// No IR commands are transmitted at boot or when restoring Wi-Fi settings.
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
+#include <WebServer.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <IRremoteESP8266.h>
+#include <ir_Bluestar.h>
+#include <esp_system.h>
+#include <cstdio>
+#include <cstring>
+#include <cmath>
+#include "web_ui.h"
+
+const uint16_t kIrLed = 23;
+const uint8_t kTemperaturePin = 22;
+const uint32_t kTemperatureInterval = 5000;
+const uint32_t kTemperatureConversionTime = 750;  // DS18B20 at 12-bit resolution.
+const uint32_t kSettingsVersion = 1;
+const uint32_t kConnectTimeout = 15000;
+const uint32_t kReconnectInterval = 30000;
+
+struct NetworkSettings {
+  uint32_t version;
+  char ssid[33];
+  char password[65];
+  char hostname[64];
+};
+
+IRBluestarAc ac(kIrLed);
+WebServer server(80);
+Preferences storage;
+NetworkSettings settings{};
+bool storageReady = false;
+bool networkUp = false;
+bool connecting = false;
+uint32_t connectionStarted = 0;
+uint32_t commandsSent = 0;
+
+enum class SetupStep { None, Ssid, Password };
+SetupStep setupStep = SetupStep::None;
+String pendingSsid;
+
+OneWire temperatureBus(kTemperaturePin);
+DallasTemperature temperatureSensor(&temperatureBus);
+DeviceAddress temperatureAddress{};
+enum class SensorStatus { Waiting, Ready, Unavailable };
+SensorStatus sensorStatus = SensorStatus::Waiting;
+bool sensorPresent = false;
+bool sensorConverting = false;
+uint32_t temperatureStarted = 0;
+float measuredTemperature = 0;
+
+const char *sensorStatusName() {
+  switch (sensorStatus) {
+    case SensorStatus::Ready: return "ready";
+    case SensorStatus::Unavailable: return "unavailable";
+    default: return "waiting";
+  }
+}
+
+void printTemperature() {
+  Serial.print(F("Measured temperature (GPIO 22): "));
+  if (sensorStatus == SensorStatus::Ready) {
+    Serial.print(measuredTemperature, 2);
+    Serial.println(F(" C"));
+  } else if (sensorStatus == SensorStatus::Waiting) {
+    Serial.println(F("waiting for first reading"));
+  } else {
+    Serial.println(F("sensor unavailable"));
+  }
+}
+
+void startTemperatureReading() {
+  if (!sensorPresent) {
+    // Retry discovery after a missing/disconnected sensor without rebooting.
+    temperatureSensor.begin();
+    for (uint8_t i = 0; i < temperatureSensor.getDeviceCount(); i++) {
+      if (temperatureSensor.getAddress(temperatureAddress, i) &&
+          temperatureAddress[0] == 0x28) {  // DS18B20 family code.
+        sensorPresent = temperatureSensor.setResolution(temperatureAddress, 12);
+        if (sensorPresent) break;
+      }
+    }
+  }
+  sensorConverting = sensorPresent &&
+      temperatureSensor.requestTemperaturesByAddress(temperatureAddress);
+  temperatureStarted = millis();
+  if (!sensorConverting) {
+    sensorPresent = false;
+    sensorStatus = SensorStatus::Unavailable;
+  } else if (sensorStatus != SensorStatus::Ready) {
+    sensorStatus = SensorStatus::Waiting;
+  }
+}
+
+void beginTemperature() {
+  temperatureSensor.setWaitForConversion(false);
+  temperatureSensor.setAutoSaveScratchPad(false);
+  startTemperatureReading();
+}
+
+void serviceTemperature() {
+  const uint32_t elapsed = millis() - temperatureStarted;
+  const SensorStatus previousStatus = sensorStatus;
+  if (sensorConverting) {
+    if (elapsed < kTemperatureConversionTime) return;
+    sensorConverting = false;
+    const float reading = temperatureSensor.getTempC(temperatureAddress);
+    if (std::isfinite(reading) && reading >= -55 && reading <= 125) {
+      measuredTemperature = reading;
+      sensorStatus = SensorStatus::Ready;
+    } else {
+      sensorPresent = false;
+      sensorStatus = SensorStatus::Unavailable;
+    }
+    // Do not interrupt SSID/password prompts with periodic sensor output.
+    if (setupStep == SetupStep::None &&
+        (sensorStatus == SensorStatus::Ready || sensorStatus != previousStatus))
+      printTemperature();
+  } else if (elapsed >= kTemperatureInterval) {
+    startTemperatureReading();
+    if (setupStep == SetupStep::None && sensorStatus == SensorStatus::Unavailable &&
+        sensorStatus != previousStatus) printTemperature();
+  }
+}
+
+bool validHostname(const String &name) {
+  if (name.length() == 0 || name.length() > 63 || name[0] == '-' ||
+      name[name.length() - 1] == '-') return false;
+  for (size_t i = 0; i < name.length(); i++) {
+    const char c = name[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+      return false;
+  }
+  return true;
+}
+
+int hexDigit(const char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+bool validPassword(const String &password) {
+  if (password.length() == 0) return true;  // Open network.
+  if (password.length() >= 8 && password.length() <= 63) return true;
+  if (password.length() != 64) return false;
+  for (size_t i = 0; i < password.length(); i++)
+    if (hexDigit(password[i]) < 0) return false;
+  return true;  // A 64-character hexadecimal WPA key.
+}
+
+bool validSettings(const NetworkSettings &value) {
+  return value.version == kSettingsVersion &&
+      std::memchr(value.ssid, '\0', sizeof(value.ssid)) &&
+      std::memchr(value.password, '\0', sizeof(value.password)) &&
+      std::memchr(value.hostname, '\0', sizeof(value.hostname)) &&
+      validHostname(String(value.hostname)) &&
+      validPassword(String(value.password));
+}
+
+void loadSettings() {
+  settings.version = kSettingsVersion;
+  snprintf(settings.hostname, sizeof(settings.hostname), "esp32");
+  storageReady = storage.begin("ac-controller", false);
+  if (!storageReady) {
+    Serial.println(F("Flash storage unavailable; Wi-Fi settings cannot save."));
+    return;
+  }
+  NetworkSettings saved{};
+  if (storage.getBytesLength("network") == sizeof(saved) &&
+      storage.getBytes("network", &saved, sizeof(saved)) == sizeof(saved) &&
+      validSettings(saved)) settings = saved;
+}
+
+bool saveSettings(const NetworkSettings &value) {
+  // A single NVS entry keeps the SSID/password pair together across updates.
+  if (!storageReady ||
+      storage.putBytes("network", &value, sizeof(value)) != sizeof(value)) {
+    Serial.println(F("Could not save settings; previous settings retained."));
+    return false;
+  }
+  settings = value;
+  return true;
+}
+
+void stopNetworkServices() {
+  server.stop();
+  MDNS.end();
+  networkUp = false;
+}
+
+void connectWifi() {
+  stopNetworkServices();
+  WiFi.disconnect(true, false);
+  connecting = false;
+  if (!settings.ssid[0]) return;
+  WiFi.persistent(false);  // Credentials are managed in our NVS entry.
+  WiFi.setHostname(settings.hostname);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(settings.ssid, settings.password);
+  connectionStarted = millis();
+  connecting = true;
+  Serial.print(F("Connecting to Wi-Fi: "));
+  Serial.println(settings.ssid);
+}
+
+void printNetworkStatus() {
+  Serial.print(F("Hostname: "));
+  Serial.print(settings.hostname);
+  Serial.println(F(".local"));
+  if (!settings.ssid[0]) {
+    Serial.println(F("No saved Wi-Fi. Use 'wifi setup'."));
+  } else {
+    Serial.print(F("SSID: "));
+    Serial.println(settings.ssid);
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.print(F("Web remote: http://"));
+      Serial.print(settings.hostname);
+      Serial.println(F(".local/"));
+      Serial.print(F("IP address: http://"));
+      Serial.print(WiFi.localIP());
+      Serial.println('/');
+    } else {
+      Serial.println(F("Wi-Fi disconnected; saved credentials will retry."));
+    }
+  }
+}
+
+void beginWifiSetup() {
+  if (setupStep != SetupStep::None) return;
+  pendingSsid = "";
+  setupStep = SetupStep::Ssid;
+  Serial.println(F("Wi-Fi setup. Type /cancel to leave setup."));
+  Serial.println(F("Enter SSID (case-sensitive), then press Enter:"));
+}
+
+void handleSetupInput(const String &line) {
+  if (line == "/cancel") {
+    setupStep = SetupStep::None;
+    pendingSsid = "";
+    Serial.println(F("Wi-Fi setup cancelled; existing settings retained."));
+    return;
+  }
+  if (setupStep == SetupStep::Ssid) {
+    // Ignore empty input without repeatedly printing the setup prompt.
+    if (line.length() == 0) return;
+    if (line.length() > 32) {
+      Serial.println(F("SSID must contain 1..32 bytes. Enter SSID:"));
+      return;
+    }
+    pendingSsid = line;
+    setupStep = SetupStep::Password;
+    Serial.println(F("Enter Wi-Fi password (case-sensitive), then Enter."));
+    Serial.println(F("Firmware does not echo it. Empty = open network:"));
+    return;
+  }
+  if (!validPassword(line)) {
+    Serial.println(F("Use 8..63 bytes, a 64-digit hex key, or an empty line."));
+    Serial.println(F("Enter password again, or /cancel:"));
+    return;
+  }
+  NetworkSettings updated = settings;
+  std::memset(updated.ssid, 0, sizeof(updated.ssid));
+  std::memset(updated.password, 0, sizeof(updated.password));
+  pendingSsid.toCharArray(updated.ssid, sizeof(updated.ssid));
+  line.toCharArray(updated.password, sizeof(updated.password));
+  if (!saveSettings(updated)) return;
+  pendingSsid = "";
+  setupStep = SetupStep::None;
+  Serial.println(F("Wi-Fi credentials saved across power loss."));
+  connectWifi();
+}
+
+void printHelp() {
+  Serial.print(F("Blue Star remote, GPIO "));
+  Serial.print(kIrLed);
+  Serial.println(F(", 115200 8-N-1. Commands:"));
+  Serial.println(F("  on / off / power toggle / temp 16..30|up|down"));
+  Serial.println(F("  mode auto|cool|dry|fan|next"));
+  Serial.println(F("  fan auto|low|medium|high|next"));
+  Serial.println(F("  capacity 100|110|80|60|40|next"));
+  Serial.println(F("  horizontal|vertical|light|turbo|econo|sleep"));
+  Serial.println(F("    on|off|toggle"));
+  Serial.println(F("  state / send / load <24 hexadecimal digits> / help"));
+  Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
+  Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
+  Serial.println(F("  wifi forget"));
+  Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));
+}
+
+void printState() {
+  Serial.println(ac.toString());
+  Serial.print(F("State: "));
+  const uint8_t *raw = ac.getRaw();
+  for (uint8_t i = 0; i < kBluestarStateLength; i++) {
+    if (raw[i] < 16) Serial.print('0');
+    Serial.print(raw[i], HEX);
+    if (i + 1 < kBluestarStateLength) Serial.print(' ');
+  }
+  Serial.println();
+  printTemperature();
+}
+
+bool loadState(String hex) {
+  hex.replace(" ", "");
+  if (hex.length() != kBluestarStateLength * 2) return false;
+  uint8_t raw[kBluestarStateLength];
+  for (uint8_t i = 0; i < kBluestarStateLength; i++) {
+    const int high = hexDigit(hex[i * 2]);
+    const int low = hexDigit(hex[i * 2 + 1]);
+    if (high < 0 || low < 0) return false;
+    raw[i] = (high << 4) | low;
+  }
+  return raw[0] == 0x33 && IRBluestarAc::validChecksum(raw) && ac.setRaw(raw);
+}
+
+bool parseTemperature(const String &value, uint8_t *temperature) {
+  if (value.length() != 2 || value[0] < '0' || value[0] > '9' ||
+      value[1] < '0' || value[1] > '9') return false;
+  const int number = value.toInt();
+  if (number < kBluestarMinTemp || number > kBluestarMaxTemp) return false;
+  *temperature = number;
+  return true;
+}
+
+// Serial and web share this handler. Only validated actions send IR.
+bool executeAcCommand(String line, String *message) {
+  line.trim();
+  line.toLowerCase();
+  const int space = line.indexOf(' ');
+  const String command = space < 0 ? line : line.substring(0, space);
+  String value = space < 0 ? "" : line.substring(space + 1);
+  value.trim();
+  bool transmit = true;
+  *message = "Invalid command. Type help for available commands.";
+  if ((command == "on" || command == "off") && value.length() == 0) {
+    ac.setPower(command == "on");
+  } else if (command == "power" && value == "toggle") {
+    ac.setPower(!ac.getPower());
+  } else if (command == "temp") {
+    if (ac.getMode() == kBluestarFanOnly) {
+      *message = "Fan-only mode has no temperature setting.";
+      return false;
+    }
+    uint8_t temp = ac.getTemp();
+    if (value == "up") {
+      temp = temp < kBluestarMaxTemp ? temp + 1 : temp;
+    } else if (value == "down") {
+      temp = temp > kBluestarMinTemp ? temp - 1 : temp;
+    } else if (!parseTemperature(value, &temp)) {
+      *message = "Temperature must be 16..30 C, up, or down.";
+      return false;
+    }
+    ac.setTemp(temp);
+  } else if (command == "mode") {
+    uint8_t mode;
+    if (value == "auto") {
+      mode = kBluestarAuto;
+    } else if (value == "cool") {
+      mode = kBluestarCool;
+    } else if (value == "dry" || value == "dehumid") {
+      mode = kBluestarDry;
+    } else if (value == "fan" || value == "fan-only") {
+      mode = kBluestarFanOnly;
+    } else if (value == "next") {
+      switch (ac.getMode()) {
+        case kBluestarAuto: mode = kBluestarCool; break;
+        case kBluestarCool: mode = kBluestarDry; break;
+        case kBluestarDry: mode = kBluestarFanOnly; break;
+        default: mode = kBluestarAuto;
+      }
+    } else {
+      return false;
+    }
+    ac.setMode(mode);
+  } else if (command == "fan") {
+    uint8_t fan;
+    if (value == "auto") {
+      fan = kBluestarFanAuto;
+    } else if (value == "low") {
+      fan = kBluestarFanLow;
+    } else if (value == "medium") {
+      fan = kBluestarFanMed;
+    } else if (value == "high") {
+      fan = kBluestarFanHigh;
+    } else if (value == "next") {
+      switch (ac.getFan()) {
+        case kBluestarFanLow: fan = kBluestarFanMed; break;
+        case kBluestarFanMed: fan = kBluestarFanHigh; break;
+        case kBluestarFanHigh:
+        case kBluestarFanTurbo: fan = kBluestarFanAuto; break;
+        default: fan = kBluestarFanLow;
+      }
+    } else {
+      return false;
+    }
+    ac.setFan(fan);
+  } else if (command == "capacity") {
+    uint8_t capacity;
+    if (value == "100") {
+      capacity = kBluestarCapacityDefault;
+    } else if (value == "110") {
+      capacity = kBluestarCapacityTurbo;
+    } else if (value == "80") {
+      capacity = kBluestarCapacity80;
+    } else if (value == "60") {
+      capacity = kBluestarCapacity60;
+    } else if (value == "40") {
+      capacity = kBluestarCapacity40;
+    } else if (value == "next") {
+      capacity = ac.getCapacity() >= kBluestarCapacityDefault ?
+          kBluestarCapacityTurbo : ac.getCapacity() + 1;
+    } else {
+      return false;
+    }
+    ac.setCapacity(capacity);
+  } else if (command == "horizontal" || command == "vertical" ||
+             command == "light" || command == "turbo" ||
+             command == "econo" || command == "sleep") {
+    bool current;
+    if (command == "horizontal") current = ac.getSwingH();
+    else if (command == "vertical") current = ac.getSwingV();
+    else if (command == "light") current = ac.getLight();
+    else if (command == "turbo") current = ac.getTurbo();
+    else if (command == "econo") current = ac.getEcono();
+    else current = ac.getSleep();
+    bool on;
+    if (value == "toggle") on = !current;
+    else if (value == "on") on = true;
+    else if (value == "off") on = false;
+    else return false;
+    if (command == "horizontal") ac.setSwingH(on);
+    else if (command == "vertical") ac.setSwingV(on);
+    else if (command == "light") ac.setLight(on);
+    else if (command == "turbo") ac.setTurbo(on);
+    else if (command == "econo") ac.setEcono(on);
+    else ac.setSleep(on);
+  } else if (command == "load") {
+    if (!loadState(value)) {
+      *message = "Invalid state length, hexadecimal value, or checksum.";
+      return false;
+    }
+    transmit = false;
+  } else if ((command == "state" || command == "send") && !value.length()) {
+    transmit = command == "send";
+  } else {
+    return false;
+  }
+  if (transmit) {
+    ac.send();
+    commandsSent++;
+    *message = "Command sent.";
+  } else {
+    *message = command == "load" ? "State loaded; use send to transmit." :
+        "Current controller settings.";
+  }
+  return true;
+}
+
+String jsonString(const String &value) {
+  String result = "\"";
+  for (size_t i = 0; i < value.length(); i++) {
+    const uint8_t c = value[i];
+    if (c == '"' || c == '\\') {
+      result += '\\';
+      result += static_cast<char>(c);
+    } else if (c < 32) {
+      char escaped[7];
+      snprintf(escaped, sizeof(escaped), "\\u%04x", c);
+      result += escaped;
+    } else {
+      result += static_cast<char>(c);
+    }
+  }
+  return result + '"';
+}
+
+String stateJson(const String &message = "", const bool ok = true) {
+  String result;
+  result.reserve(512);
+  result = "{\"ok\":";
+  result += ok ? "true" : "false";
+  result += ",\"message\":" + jsonString(message);
+  result += ",\"hostname\":" + jsonString(String(settings.hostname));
+  result += ",\"ip\":" + jsonString(WiFi.localIP().toString());
+  result += ",\"power\":" + String(ac.getPower() ? "true" : "false");
+  result += ",\"mode\":" + String(ac.getMode());
+  result += ",\"temperature\":" + String(ac.getTemp());
+  result += ",\"measuredTemperature\":";
+  result += sensorStatus == SensorStatus::Ready ?
+      String(measuredTemperature, 2) : String("null");
+  result += ",\"sensorStatus\":" + jsonString(String(sensorStatusName()));
+  result += ",\"fan\":" + String(ac.getFan());
+  result += ",\"capacity\":" + String(ac.getCapacity());
+  result += ",\"horizontal\":" + String(ac.getSwingH() ? "true" : "false");
+  result += ",\"vertical\":" + String(ac.getSwingV() ? "true" : "false");
+  result += ",\"light\":" + String(ac.getLight() ? "true" : "false");
+  result += ",\"turbo\":" + String(ac.getTurbo() ? "true" : "false");
+  result += ",\"econo\":" + String(ac.getEcono() ? "true" : "false");
+  result += ",\"sleep\":" + String(ac.getSleep() ? "true" : "false");
+  result += ",\"sent\":" + String(commandsSent) + "}";
+  return result;
+}
+
+void configureWebServer() {
+  const char *headers[] = {"Origin"};
+  server.collectHeaders(headers, 1);
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html; charset=utf-8", kControlPage);
+  });
+  server.on("/api/state", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", stateJson());
+  });
+  server.on("/api/command", HTTP_POST, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    const String origin = server.header("Origin");
+    if (origin.length() && origin != "http://" + server.hostHeader()) {
+      server.send(403, "application/json",
+                  stateJson("Use the controller page.", false));
+      return;
+    }
+    const String command = server.arg("command");
+    if (command.length() == 0 || command.length() > 127) {
+      server.send(400, "application/json",
+                  stateJson("Invalid command.", false));
+      return;
+    }
+    String message;
+    const bool ok = executeAcCommand(command, &message);
+    server.send(ok ? 200 : 400, "application/json", stateJson(message, ok));
+    if (ok) {
+      Serial.print(F("Web: "));
+      Serial.println(command);
+      printState();
+    }
+  });
+  server.on("/favicon.ico", HTTP_GET, []() { server.send(204); });
+  server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
+}
+
+void serviceNetwork() {
+  if (!settings.ssid[0]) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    connecting = false;
+    if (!networkUp) {
+      networkUp = true;
+      server.begin();
+      if (MDNS.begin(settings.hostname)) MDNS.addService("http", "tcp", 80);
+      else Serial.println(F("mDNS unavailable; use the printed IP address."));
+      printNetworkStatus();
+    }
+    server.handleClient();
+    return;
+  }
+  if (networkUp) {
+    stopNetworkServices();
+    Serial.println(F("Wi-Fi lost. Reconnecting; serial controls still work."));
+    connectionStarted = millis();
+    connecting = true;
+  }
+  const uint32_t elapsed = millis() - connectionStarted;
+  if (connecting && elapsed >= kConnectTimeout) {
+    connecting = false;
+    Serial.println(F("Wi-Fi not connected. Try wifi setup."));
+  }
+  if (elapsed >= kReconnectInterval) {
+    WiFi.reconnect();
+    connectionStarted = millis();
+    connecting = true;
+    Serial.println(F("Retrying saved Wi-Fi."));
+  }
+}
+
+void processSerialCommand(String line) {
+  if (setupStep != SetupStep::None) {
+    handleSetupInput(line);  // Preserve case and spaces in credentials.
+    return;
+  }
+  line.trim();
+  if (line.length() == 0) return;
+  const int space = line.indexOf(' ');
+  String command = space < 0 ? line : line.substring(0, space);
+  String value = space < 0 ? "" : line.substring(space + 1);
+  command.toLowerCase();
+  value.trim();
+  if (command == "wifi") {
+    value.toLowerCase();
+    if (value == "setup") {
+      beginWifiSetup();
+    } else if (value == "status" || value.length() == 0) {
+      printNetworkStatus();
+    } else if (value == "reconnect") {
+      connectWifi();
+    } else if (value == "forget") {
+      NetworkSettings updated = settings;
+      std::memset(updated.ssid, 0, sizeof(updated.ssid));
+      std::memset(updated.password, 0, sizeof(updated.password));
+      if (saveSettings(updated)) {
+        connectWifi();  // Disconnect and stop serving.
+        Serial.println(F("Saved Wi-Fi credentials forgotten."));
+        beginWifiSetup();
+      }
+    } else {
+      printHelp();
+    }
+    return;
+  }
+  if (command == "hostname") {
+    if (!value.length()) {
+      printNetworkStatus();
+      return;
+    }
+    value.toLowerCase();
+    if (!validHostname(value)) {
+      Serial.println(F("Use 1..63 letters/digits/hyphens, without .local."));
+      Serial.println(F("The first and last character cannot be a hyphen."));
+      return;
+    }
+    NetworkSettings updated = settings;
+    value.toCharArray(updated.hostname, sizeof(updated.hostname));
+    if (saveSettings(updated)) {
+      Serial.println(F("Hostname saved. Reconnecting with the new name."));
+      connectWifi();
+    }
+    return;
+  }
+  if (command == "help" && !value.length()) {
+    printHelp();
+    return;
+  }
+  if (command == "sensor" && !value.length()) {
+    printTemperature();
+    return;
+  }
+  String message;
+  if (executeAcCommand(line, &message)) {
+    Serial.println(message);
+    printState();
+  } else {
+    Serial.println(message);
+  }
+}
+
+void readSerial() {
+  static char line[192];
+  static size_t length = 0;
+  static bool overflow = false;
+  static bool previousCr = false;
+  // A noisy or continuously active serial port must not starve the main loop.
+  size_t processed = 0;
+  while (Serial.available() && processed++ < 64) {
+    const uint8_t c = Serial.read();
+    if (c == '\n' && previousCr) {
+      previousCr = false;  // CRLF is one line, including password prompts.
+      continue;
+    }
+    previousCr = c == '\r';
+    if (c == '\r' || c == '\n') {
+      if (overflow) {
+        Serial.println(F("Command too long; discarded."));
+      } else if (length || setupStep != SetupStep::None) {
+        line[length] = '\0';
+        processSerialCommand(String(line));
+      }
+      std::memset(line, 0, sizeof(line));
+      length = 0;
+      overflow = false;
+    } else if (!overflow && (c == '\b' || c == 127)) {
+      if (length) length--;
+    } else if (!overflow && c >= ' ') {
+      if (length + 1 < sizeof(line)) line[length++] = c;
+      else overflow = true;
+    }
+  }
+}
+
+const char *resetReasonName(const esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "power-on/reset pin";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "exception/panic";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT: return "brownout";
+    default: return "other";
+  }
+}
+
+void setup() {
+  Serial.begin(115200, SERIAL_8N1);
+  // Let the USB/serial monitor settle before printing startup text.
+  delay(300);
+  const esp_reset_reason_t reason = esp_reset_reason();
+  Serial.printf("\n[boot] reset=%s (%d)\n", resetReasonName(reason),
+                static_cast<int>(reason));
+  ac.begin();
+  beginTemperature();
+  loadSettings();
+  configureWebServer();
+  printHelp();
+  printState();
+  Serial.flush();
+  if (settings.ssid[0]) connectWifi();
+  else beginWifiSetup();
+}
+
+void loop() {
+  readSerial();
+  serviceTemperature();
+  serviceNetwork();
+  delay(1);
+}
