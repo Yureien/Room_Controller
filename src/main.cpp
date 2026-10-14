@@ -175,7 +175,8 @@ void serviceCpuPower() {
 }
 
 void serviceActivityLed() {
-  const bool on = activityLed.on(millis(), lamp.needsFastCpu(), autoCool.enabled());
+  const bool autoCoolTurbo = autoCool.enabled() && ac.getPower() && ac.getTurbo();
+  const bool on = activityLed.on(millis(), lamp.needsFastCpu(), autoCoolTurbo);
   digitalWrite(kActivityLedPin, on ? kActivityLedOnLevel : !kActivityLedOnLevel);
 }
 

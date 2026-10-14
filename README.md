@@ -233,9 +233,10 @@ RAM history continue across light sleep without a restart.
 
 The blue onboard LED works independently of the power-saving flag. It stays on
 through a BLE session or queued lamp work, and during an AC IR transmission plus
-500 ms afterward. When Auto-Cool is enabled, it alternates one second on and
-one second off, including while waiting for recovery; BLE/AC activity takes
-priority and blinking resumes afterward. Otherwise it is off after boot.
+500 ms afterward. While Auto-Cool has Turbo active and the AC is on, it
+alternates one second on and one second off. Monitoring without Turbo and the
+recovery off period do not blink. BLE/AC activity takes priority over blinking.
+Otherwise it is off after boot.
 Routine web polling and temperature sampling do not hold the LED on. The
 board's separate red power LED is wired directly to power and cannot be
 switched by firmware.

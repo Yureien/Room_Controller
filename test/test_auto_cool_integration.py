@@ -6,7 +6,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 source = (ROOT / "src/main.cpp").read_text()
-names = ["temperatureAvailable", "sendAcPacket", "restoreAutoCoolTarget",
+names = ["temperatureAvailable", "serviceActivityLed", "sendAcPacket", "restoreAutoCoolTarget",
          "stopAutoCool", "serviceAutoCool", "saveAcState",
          "saveAutoCoolSettings", "loadAutoCoolSettings"]
 functions = []
@@ -58,6 +58,10 @@ struct IRBluestarAc {
   void setTurbo(bool on) { raw[3] = on; raw[4] = 3; }
   void send() { assert(ledLevel == kActivityLedOnLevel); packets.push_back(raw); }
 } ac;
+struct LampStub {
+  bool active = false;
+  bool needsFastCpu() { return active; }
+} lamp;
 struct PreferencesStub {
   std::map<std::string, std::vector<uint8_t>> values;
   unsigned writes = 0;
@@ -110,6 +114,17 @@ int main() {
   led.acCommand(UINT32_MAX - 200);
   assert(led.on(100, false, false) && !led.on(300, false, false));
   ac.setTemp(20); autoCool.enable(20);
+  serviceActivityLed();
+  assert(ledLevel == 0);  // Enabled but monitoring: no heartbeat.
+  ac.setTurbo(true);
+  serviceActivityLed(); assert(ledLevel == 1);
+  clockMs = 1000;
+  serviceActivityLed(); assert(ledLevel == 0);
+  autoCool.disable(); clockMs = 2000;
+  serviceActivityLed(); assert(ledLevel == 0);  // Manual Turbo is not Auto-Cool.
+  lamp.active = true;
+  serviceActivityLed(); assert(ledLevel == 1);
+  lamp.active = false; ac.setTurbo(false); autoCool.enable(20); clockMs = 0;
   assert(saveAcState() && saveAutoCoolSettings());
   assert(storage.getBytesLength("auto-cool") == 8 && storage.writes == 2);
   assert(saveAcState() && saveAutoCoolSettings() && storage.writes == 2);
@@ -117,6 +132,9 @@ int main() {
   assert(ac.getTurbo() && storage.writes == 2);  // Turbo must not write flash.
   for (int i = 1; i <= 60; ++i) read(22 + i / 100.0f);
   assert(autoCool.waiting() && !ac.getPower() && storage.writes == 3);
+  clockMs += 1000;  // Let the Off-command activity pulse expire.
+  serviceActivityLed();
+  assert(ledLevel == 0);  // Recovery wait has Turbo set but AC is off.
   SavedAcState saved{};
   storage.getBytes("ac-state", &saved, sizeof(saved));
   assert(saved.raw[0] == 0 && saved.raw[2] == 20 && saved.raw[3] == 0);

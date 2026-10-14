@@ -8,9 +8,9 @@
 class ActivityLed {
  public:
   void acCommand(uint32_t now) { lastAcCommand_ = now; haveAcCommand_ = true; }
-  bool on(uint32_t now, bool bleActive, bool autoCoolEnabled) const {
+  bool on(uint32_t now, bool bleActive, bool autoCoolTurboActive) const {
     if (bleActive || (haveAcCommand_ && now - lastAcCommand_ < 500)) return true;
-    return autoCoolEnabled && (now / 1000) % 2 == 0;
+    return autoCoolTurboActive && (now / 1000) % 2 == 0;
   }
 
  private:

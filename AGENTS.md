@@ -41,9 +41,9 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
   UART wake handling is disabled. With flag `1`, preserve SDK-managed sleep/scaling
   and acquire the existing CPU/no-sleep locks before IR; do not change CPU clocks manually.
 - `src/activity_led.h` is independent of power management: BLE/AC activity wins
-  over Auto-Cool's one-second on/off blink. AC sends hold the LED for 500 ms
-  afterward; routine polling does not light it. Keep BLE's 30-second idle
-  disconnect and manual Disconnect in both builds so the phone can connect.
+  over the one-second on/off blink when Auto-Cool Turbo is active and AC is on.
+  AC sends hold the LED for 500 ms afterward; polling does not light it.
+  Keep BLE's 30-second idle and manual disconnects in both builds for phone access.
 - There is no AC feedback; the physical remote and missed IR packets are invisible.
   Startup restoration sends no IR. Persisted Auto-Cool can act after a valid reading.
 - Auto-Cool retains its target separately from Turbo's 16°C operation. Recovery
