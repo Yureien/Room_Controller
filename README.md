@@ -22,22 +22,20 @@ serial setup and a local web page at **http://esp32.local/**.
 | Serial | `/dev/ttyUSB0`, 115200 baud, 8-N-1 |
 
 The local project is `~/PlatformIO/Projects/Room_Controller`. Open
-`Room_Controller.code-workspace` in VS Code to work on the controller and the
-adjacent IR receiver example.
+`Room_Controller.code-workspace` in VS Code to work on the controller. Its
+optional IR receiver folder points to an adjacent `../IRremoteESP8266` checkout;
+that folder is only for receiver experiments and is not needed to build.
 
-For a fresh checkout, create both projects side by side:
+For a fresh checkout:
 
 ```sh
 cd ~/PlatformIO/Projects
 git clone git@github.com:Yureien/Room_Controller.git
-git clone --branch bluestar-ie318yku git@github.com:Yureien/IRremoteESP8266.git
 cd Room_Controller
 ```
 
-`platformio.ini` uses the adjacent `../IRremoteESP8266` checkout, which contains
-experimental Blue Star support. Changes to that checkout are available through
-the local dependency link. To build without an adjacent checkout, replace only
-`symlink://../IRremoteESP8266` with:
+`platformio.ini` fetches the IR library directly from the fork's experimental
+Blue Star branch. An adjacent IR library checkout is not required to build:
 
 ```ini
 https://github.com/Yureien/IRremoteESP8266.git#bluestar-ie318yku
@@ -47,7 +45,9 @@ PlatformIO installs the pinned ESP32 platform, ESP-IDF 4.4.7, Arduino 2.0.17,
 OneWire, DallasTemperature, and NimBLE-Arduino dependencies. Arduino is compiled
 as an ESP-IDF component so `sdkconfig.defaults` can enable power management and
 tickless idle in the SDK itself. The first build downloads additional tools and
-compiles the SDK; later builds are incremental. Build, upload, and open serial:
+compiles the SDK; later builds are incremental. The pre-build script disables
+IDF's separate component manager for the application and bootloader; PlatformIO
+installs the libraries. Build, upload, and open serial:
 
 ```sh
 pio run
