@@ -22,6 +22,7 @@
 #include "web_ui.h"
 #include "lotus_lamp.h"
 #include "temperature_history.h"
+#include "auto_cool.h"
 
 const uint16_t kIrLed = 23;
 const uint8_t kTemperaturePin = 22;
@@ -50,6 +51,14 @@ struct SavedAcState {
   uint8_t raw[kBluestarStateLength];
   uint8_t normalFan;  // Fan to restore when returning to 100% capacity.
 };
+
+struct SavedAutoCool {
+  uint32_t version;
+  uint8_t target;
+  uint8_t enabled;
+  uint16_t reserved;
+};
+static_assert(sizeof(SavedAutoCool) == 8, "Unexpected Auto-Cool settings size");
 
 IRBluestarAc ac(kIrLed);
 LotusLampController lamp;
@@ -86,6 +95,12 @@ uint32_t temperatureStarted = 0;
 float measuredTemperature = 0;
 uint32_t measuredTemperatureSeconds = 0;
 TemperatureHistory temperatureHistory;
+AutoCool autoCool;
+SavedAutoCool lastSavedAutoCool{};
+bool haveSavedAutoCool = false;
+bool autoCoolSettingsSaved = true;
+bool saveAutoCoolSettings();
+bool saveAcState();
 
 void acquireActivePower() {
   if (powerManagementReady && !cpuBoosted) {
@@ -214,6 +229,72 @@ void serviceTemperature() {
   }
 }
 
+bool temperatureAvailable() {
+  const uint32_t now = esp_timer_get_time() / 1000000;
+  return sensorStatus == SensorStatus::Ready &&
+      now - measuredTemperatureSeconds <= 7;
+}
+
+void sendAcPacket() {
+  boostCpu();
+  ac.send();
+  commandsSent++;
+}
+
+void restoreAutoCoolTarget() {
+  if (ac.getTemp() != autoCool.target()) {
+    ac.setTemp(autoCool.target());
+    sendAcPacket();
+  }
+}
+
+void stopAutoCool() {
+  if (autoCool.enabled() && ac.getTurbo()) {
+    ac.setTurbo(false);
+    sendAcPacket();
+    if (ac.getPower()) restoreAutoCoolTarget();
+  }
+  autoCool.disable();
+  saveAutoCoolSettings();
+}
+
+void serviceAutoCool() {
+  const AutoCool::Action action = autoCool.update(
+      millis(), measuredTemperatureSeconds, temperatureAvailable(),
+      measuredTemperature, ac.getPower(), ac.getMode() == kBluestarCool,
+      ac.getTurbo());
+  switch (action) {
+    case AutoCool::Action::TurboOn:
+    case AutoCool::Action::TurboOff:
+      ac.setTurbo(action == AutoCool::Action::TurboOn);
+      sendAcPacket();
+      restoreAutoCoolTarget();
+      break;
+    case AutoCool::Action::PowerOff:
+      ac.setPower(false);
+      sendAcPacket();
+      // A reboot during recovery must restore Off, never a pending restart.
+      if (!saveAcState()) autoCoolSettingsSaved = false;
+      break;
+    case AutoCool::Action::PowerOn:
+      ac.setPower(true);
+      sendAcPacket();
+      // Power commands clamp targets below 24 C. Send target restoration
+      // separately so the preceding IR packet retains its Power command.
+      restoreAutoCoolTarget();
+      if (!saveAcState()) autoCoolSettingsSaved = false;
+      break;
+    default: return;
+  }
+  // Turbo transitions never write flash. Only recovery power changes update
+  // the existing saved AC state; recovery timers/latches remain in RAM.
+  if (setupStep == SetupStep::None)
+    Serial.printf("[auto-cool] %s; target %u C\n",
+        action == AutoCool::Action::PowerOff ? "Recovery: off for 120s" :
+        action == AutoCool::Action::PowerOn ? "Recovery: restarted" :
+        ac.getTurbo() ? "Turbo on" : "Turbo off", autoCool.target());
+}
+
 bool validHostname(const String &name) {
   if (name.length() == 0 || name.length() > 63 || name[0] == '-' ||
       name[name.length() - 1] == '-') return false;
@@ -315,6 +396,14 @@ bool saveAcState() {
   SavedAcState value{};
   value.version = kAcStateVersion;
   std::memcpy(value.raw, ac.getRaw(), sizeof(value.raw));
+  if (autoCool.enabled()) {
+    // Manual target/swing edits must not accidentally persist automatic Turbo.
+    IRBluestarAc desired(kIrLed);
+    desired.setRaw(value.raw);
+    desired.setTurbo(false);
+    desired.setTemp(autoCool.target());
+    std::memcpy(value.raw, desired.getRaw(), sizeof(value.raw));
+  }
   value.normalFan = normalFan;
   // Avoid flash writes for polling, repeated sends, and unchanged settings.
   if (haveSavedAcState && value.version == lastSavedAcState.version &&
@@ -330,6 +419,45 @@ bool saveAcState() {
   lastSavedAcState = value;
   haveSavedAcState = true;
   return true;
+}
+
+bool saveAutoCoolSettings() {
+  const SavedAutoCool value{1, autoCool.target(),
+      static_cast<uint8_t>(autoCool.enabled()), 0};
+  if (haveSavedAutoCool && std::memcmp(&value, &lastSavedAutoCool, sizeof(value)) == 0) {
+    autoCoolSettingsSaved = true;
+    return true;
+  }
+  autoCoolSettingsSaved = storageReady &&
+      storage.putBytes("auto-cool", &value, sizeof(value)) == sizeof(value);
+  if (!autoCoolSettingsSaved) {
+    Serial.println(F("Could not save Auto-Cool settings; previous saved settings retained."));
+    return false;
+  }
+  lastSavedAutoCool = value;
+  haveSavedAutoCool = true;
+  return true;
+}
+
+void loadAutoCoolSettings() {
+  if (!storageReady || !storage.getBytesLength("auto-cool")) return;
+  SavedAutoCool saved{};
+  if (storage.getBytesLength("auto-cool") != sizeof(saved) ||
+      storage.getBytes("auto-cool", &saved, sizeof(saved)) != sizeof(saved) ||
+      saved.version != 1 || saved.reserved || saved.enabled > 1 ||
+      saved.target < kBluestarMinTemp || saved.target > kBluestarMaxTemp) {
+    Serial.println(F("Saved Auto-Cool settings invalid; Auto-Cool disabled."));
+    return;
+  }
+  lastSavedAutoCool = saved;
+  haveSavedAutoCool = true;
+  autoCool.setTarget(saved.target);
+  if (saved.enabled && ac.getPower() && ac.getMode() == kBluestarCool) {
+    autoCool.enable(saved.target);
+    ac.setTemp(saved.target);
+    ac.setTurbo(false);
+    Serial.println(F("Restored Auto-Cool target; waiting for a valid sensor reading. No recovery resumed."));
+  }
 }
 
 void stopNetworkServices() {
@@ -440,6 +568,7 @@ void printHelp() {
   Serial.println(F("    on|off|toggle"));
   Serial.println(F("  state / send / load <24 hexadecimal digits> / help"));
   Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
+  Serial.println(F("  autocool on|off|toggle (AC on in Cool mode; valid sensor required)"));
   Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
   Serial.println(F("  wifi forget"));
   Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));
@@ -494,16 +623,53 @@ bool executeAcCommand(String line, String *message) {
   value.trim();
   bool transmit = true;
   *message = "Invalid command. Type help for available commands.";
+  if (command == "autocool") {
+    bool on;
+    if (value == "toggle") on = !autoCool.enabled();
+    else if (value == "on") on = true;
+    else if (value == "off") on = false;
+    else return false;
+    if (on && !autoCool.enabled()) {
+      if (!ac.getPower() || ac.getMode() != kBluestarCool || !temperatureAvailable()) {
+        *message = "Auto-Cool requires AC on in Cool mode and a valid temperature reading.";
+        return false;
+      }
+      if (ac.getEcono() || ac.getSleep()) {
+        *message = "Turn off Energy Save and Sleep before enabling Auto-Cool.";
+        return false;
+      }
+      autoCool.enable(ac.getTemp());
+    } else if (!on) {
+      const bool waiting = autoCool.waiting();
+      stopAutoCool();
+      *message = waiting ? "Auto-Cool disabled. Recovery cancelled; AC remains off." :
+          "Auto-Cool disabled.";
+      if (!autoCoolSettingsSaved) *message += " Warning: Auto-Cool settings could not be saved.";
+      return true;
+    }
+    *message = "Auto-Cool enabled.";
+    if (!saveAcState()) *message += " Warning: AC settings could not be saved.";
+    if (!saveAutoCoolSettings()) *message += " Warning: Auto-Cool settings could not be saved.";
+    return true;
+  }
+  // A queued automatic restart must never override an explicit manual Off.
+  // Prevent early restart and settings changes during the two-minute wait.
+  if (autoCool.waiting() && command != "off" && command != "state") {
+    *message = "Recovery cooldown active. Use off or autocool off to cancel; AC remains off.";
+    return false;
+  }
   if ((command == "on" || command == "off") && value.length() == 0) {
+    stopAutoCool();
     ac.setPower(command == "on");
   } else if (command == "power" && value == "toggle") {
+    stopAutoCool();
     ac.setPower(!ac.getPower());
   } else if (command == "temp") {
     if (ac.getMode() == kBluestarFanOnly) {
       *message = "Fan-only mode has no temperature setting.";
       return false;
     }
-    uint8_t temp = ac.getTemp();
+    uint8_t temp = autoCool.enabled() ? autoCool.target() : ac.getTemp();
     if (value == "up") {
       temp = temp < kBluestarMaxTemp ? temp + 1 : temp;
     } else if (value == "down") {
@@ -513,6 +679,7 @@ bool executeAcCommand(String line, String *message) {
       return false;
     }
     ac.setTemp(temp);
+    autoCool.setTarget(temp);
   } else if (command == "mode") {
     uint8_t mode;
     if (value == "auto") {
@@ -533,6 +700,7 @@ bool executeAcCommand(String line, String *message) {
     } else {
       return false;
     }
+    stopAutoCool();
     ac.setMode(mode);
   } else if (command == "fan") {
     uint8_t fan;
@@ -555,6 +723,7 @@ bool executeAcCommand(String line, String *message) {
     } else {
       return false;
     }
+    stopAutoCool();
     ac.setFan(fan);
     normalFan = fan;
   } else if (command == "capacity") {
@@ -575,6 +744,7 @@ bool executeAcCommand(String line, String *message) {
     } else {
       return false;
     }
+    stopAutoCool();
     if (ac.getCapacity() == kBluestarCapacityDefault)
       normalFan = rememberedFan(ac.getFan());
     ac.setCapacity(capacity);
@@ -593,6 +763,8 @@ bool executeAcCommand(String line, String *message) {
     else if (value == "on") on = true;
     else if (value == "off") on = false;
     else return false;
+    if (command == "turbo" || command == "econo" || command == "sleep")
+      stopAutoCool();
     if (command == "horizontal") ac.setSwingH(on);
     else if (command == "vertical") ac.setSwingV(on);
     else if (command == "light") ac.setLight(on);
@@ -606,6 +778,7 @@ bool executeAcCommand(String line, String *message) {
       return false;
     }
     normalFan = rememberedFan(ac.getFan());
+    autoCool.disable();
     transmit = false;
   } else if ((command == "state" || command == "send") && !value.length()) {
     transmit = command == "send";
@@ -614,9 +787,7 @@ bool executeAcCommand(String line, String *message) {
   }
   if (transmit) {
     // Preserve the software IR carrier's original CPU timing during sends.
-    boostCpu();
-    ac.send();
-    commandsSent++;
+    sendAcPacket();
     *message = "Command sent.";
   } else {
     *message = command == "load" ? "State loaded; use send to transmit." :
@@ -624,6 +795,8 @@ bool executeAcCommand(String line, String *message) {
   }
   if ((transmit || command == "load") && !saveAcState())
     *message += " Warning: AC settings could not be saved.";
+  if (command != "state" && !saveAutoCoolSettings())
+    *message += " Warning: Auto-Cool settings could not be saved.";
   return true;
 }
 
@@ -656,6 +829,13 @@ String stateJson(const String &message = "", const bool ok = true) {
   result += ",\"power\":" + String(ac.getPower() ? "true" : "false");
   result += ",\"mode\":" + String(ac.getMode());
   result += ",\"temperature\":" + String(ac.getTemp());
+  result += ",\"autoCool\":{\"enabled\":" + String(autoCool.enabled() ? "true" : "false");
+  result += ",\"target\":" + String(autoCool.target());
+  result += ",\"waiting\":" + String(autoCool.waiting() ? "true" : "false");
+  result += ",\"waitSeconds\":" + String(autoCool.waitSeconds(millis()));
+  result += ",\"recoveryUsed\":" + String(autoCool.recoveryUsed() ? "true" : "false");
+  result += ",\"cancelled\":" + String(autoCool.cancelled() ? "true" : "false");
+  result += ",\"saved\":" + String(autoCoolSettingsSaved ? "true" : "false") + "}";
   result += ",\"measuredTemperature\":";
   result += sensorStatus == SensorStatus::Ready ?
       String(measuredTemperature, 2) : String("null");
@@ -957,6 +1137,7 @@ void setup() {
   beginTemperature();
   loadSettings();
   loadAcState();
+  loadAutoCoolSettings();
   lamp.begin();
   configureWebServer();
   printHelp();
@@ -970,6 +1151,7 @@ void loop() {
   readSerial();
   lamp.service(setupStep == SetupStep::None);
   serviceTemperature();
+  serviceAutoCool();
   if (sensorStatus != SensorStatus::Waiting) {
     const uint32_t now = esp_timer_get_time() / 1000000;
     // A stalled/slow web client must not turn an old reading into a fresh sample.

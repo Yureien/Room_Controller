@@ -19,15 +19,23 @@ const ctx = {
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     clientWidth:320, value:'50', textContent:'', disabled:false,
-    classList:{toggle() {}, add() {}, remove() {}},
+    dataset:{}, classList:{toggle() {}, add() {}, remove() {}},
     setAttribute() {}, addEventListener() {}, getContext() { return ctx; }
   });
   return elements.get(id);
 }
 const state = {ok:true, power:false, sensorStatus:'ready', measuredTemperature:20,
+  mode:8, temperature:24, turbo:false,
+  autoCool:{enabled:false, target:24, waiting:false, recoveryUsed:false, cancelled:false, saved:true},
   sensorIntervalSeconds:5, lamp:{configured:true, connected:false, busy:false,
     ok:true, completed:0, color:'#ffffff', brightness:100, speed:50, solid:true}};
 const document = {hidden:false, getElementById:element, querySelectorAll(selector) {
+  if (selector === '[data-command]') {
+    for (const [id, command] of [['auto-cool','autocool toggle'], ['power','power toggle'],
+         ['temp-up','temp up'], ['temp-down','temp down'], ['send','send']])
+      element(id).dataset.command = command;
+    return ['auto-cool','power','temp-up','temp-down','send'].map(element);
+  }
   return selector === '.lamp button, .lamp input, .lamp select' ?
     [element('lamp-connect'), element('lamp-disconnect')] : [];
   },
@@ -52,6 +60,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(element('lamp-connect').textContent, 'Connect');
   assert.equal(element('lamp-disconnect').disabled, true);
   assert.equal(element('lamp-link').textContent, 'Sleeping');
+  assert.equal(element('auto-cool').disabled, true, 'Auto-Cool cannot turn the AC on');
   assert.equal(dots.length, 2, 'Isolated readings must be visible');
   const plot = strokes[strokes.length - 1];
   assert.equal(plot.filter(p => p[0] === 'move').length, 2);
@@ -85,5 +94,23 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   run('state.lamp.connected = true; renderLamp()');
   assert.equal(element('lamp-connect').textContent, 'Reconnect');
   assert.equal(element('lamp-disconnect').disabled, false);
-  console.log('Web UI checks passed: history gaps/capacity, polling, and connection controls.');
+  run('state.power = true; state.turbo = true; state.autoCool.enabled = true; render(state)');
+  assert.equal(element('auto-cool').textContent, 'Auto-Cool: On');
+  assert.equal(element('temperature').textContent, '24', 'Display the target during Turbo');
+  assert.match(element('flags').textContent, /AC running at 16°C/);
+  run('state.autoCool.target = 16; render(state)');
+  assert.equal(element('temp-down').disabled, true);
+  run('state.power = false; state.autoCool.waiting = true; state.autoCool.waitSeconds = 90; render(state)');
+  assert.equal(element('power').dataset.command, 'off', 'Power button cancels a pending restart');
+  assert.equal(element('power').disabled, false);
+  assert.equal(element('auto-cool').disabled, false);
+  assert.equal(element('temp-up').disabled, true);
+  assert.equal(element('send').disabled, true);
+  assert.match(element('auto-cool-status').textContent, /Restart in 90s/);
+  run('state.autoCool.waiting = false; state.autoCool.enabled = false; state.autoCool.cancelled = true; render(state)');
+  assert.match(element('auto-cool-status').textContent, /Restart cancelled/);
+  assert.equal(element('power').dataset.command, 'power toggle');
+  run('state.autoCool.saved = false; render(state)');
+  assert.match(element('auto-cool-status').textContent, /could not be saved/);
+  console.log('Web UI checks passed: history, polling, connection controls, and Auto-Cool recovery controls.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

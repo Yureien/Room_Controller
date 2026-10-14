@@ -7,7 +7,8 @@ serial setup and a local web page at **http://esp32.local/**.
 - **Temperature:** DS18B20 measurements, separate from the AC setpoint.
 - **Lighting:** Lotus Lamp RGB strip control over Bluetooth Low Energy.
 - **Saved settings:** Wi-Fi credentials, hostname, AC state, selected strip,
-  and last requested light settings persist across power loss.
+  last requested light settings, and Auto-Cool enabled/target settings persist
+  across power loss. Temperature history and recovery timers stay in RAM.
 
 ## Hardware and project setup
 
@@ -109,6 +110,51 @@ Light, and Send Again. Cycle controls follow the physical remote:
 - Capacity: 100% → 110% Turbo → 80% → 60% → 40% → 100%.
 
 AC buttons transmit immediately; Fan-only disables temperature adjustment.
+**Auto-Cool** uses the measured room temperature to control Turbo and attempt
+one recovery if cooling stops. It requires the AC to already be on in Cool
+mode, with Energy Save and Sleep off and a valid sensor reading. It never turns
+on an otherwise-off AC. It runs on the ESP32 even with the browser closed or
+Wi-Fi disconnected.
+
+- Turbo turns on above the target +1.5°C and off below the target −0.5°C.
+  Equality at either boundary retains the current Turbo setting. The saved
+  target stays independent of Turbo's 16°C operating temperature; the page
+  shows the target and notes when the AC is running at 16°C. Temperature
+  buttons adjust the target and restart trend collection.
+- Recovery requires five continuous minutes above target +1.5°C with Turbo
+  active. The last 30-second average must exceed the first by at least 0.125°C,
+  and must also exceed the preceding 30-second average. Flat, falling, or
+  one-step sensor noise does not trigger recovery. A missing reading, a gap
+  longer than seven seconds, a target change, or a reading at/below target
+  +1.5°C restarts the observation window.
+- Recovery sends Power Off, waits two minutes without blocking other controller
+  work, then sends Power On and restores the target, including targets below
+  24°C that the AC library's Power command otherwise clamps. The one-recovery
+  lockout clears only on a valid reading strictly below target; button toggles
+  and manual power changes preserve it until then.
+- During the wait, **Power** cancels the restart and keeps the AC off. Disabling
+  Auto-Cool does the same. Other AC changes, including early Power On, are
+  rejected until the wait finishes or is explicitly cancelled. Lamp control
+  remains available. Sensor loss during the wait cancels the restart and
+  requires a manual restart; outside recovery it turns Turbo off and pauses
+  automation until valid measurements return.
+- Manual power, mode, fan, capacity, Turbo, Energy Save, Sleep, or raw-state
+  changes disable Auto-Cool. Swing and display-light edits keep it enabled.
+  Enabling/disabling and target edits save a small eight-byte NVS settings
+  record; unchanged values and automatic Turbo transitions do not write flash.
+  Recovery updates the existing saved AC power state at Off and On, so a reboot
+  during recovery leaves the AC off and does not resume a queued restart.
+- On reboot, Auto-Cool resumes temperature control only if the saved AC state
+  is On in Cool mode. Recovery trends, countdowns, and the one-recovery lockout
+  are not persisted; a new boot starts a new observation window. No IR is sent
+  during startup restoration; temperature control waits for a valid reading.
+
+The controller has no AC state feedback: changes using the physical remote
+are invisible, and an IR packet can be missed. These protections use the
+controller's last requested power state. A rising trend also cannot distinguish
+a cooling fault from increased room heat or a poorly placed sensor. Verify IR
+reception and sensor placement on the actual AC before relying on recovery.
+
 The LED section provides On/Off, ten preset colors, a browser color picker,
 brightness, 213 effects, animation speed, Connect/Reconnect, and Disconnect. Preset color and power
 buttons send immediately. Other selections transmit when you click **Apply**.
@@ -216,6 +262,7 @@ operation on hardware before relying on measured savings.
 | `send` | Transmit the current AC packet again |
 | `load <24 hexadecimal digits>` | Import ten main bytes plus the two-byte secondary command |
 | `sensor` | Print measured temperature without sending IR |
+| `autocool on`, `autocool off`, `autocool toggle` | Enable/disable Auto-Cool; enabling requires AC On/Cool and a valid sensor |
 | `help` | List AC, network, sensor, and lighting commands |
 
 Unprefixed `on`, `off`, and `light` address the AC; `lamp on` and `lamp off`
@@ -315,7 +362,7 @@ does not reset AC or lamp settings; `lamp forget` does not reset Wi-Fi or AC.
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /` | Room Controller page |
-| `GET /api/state` | AC, sensor, network address, and nested lamp status |
+| `GET /api/state` | AC, sensor, network address, Auto-Cool target/recovery status, and nested lamp status |
 | `GET /api/temperature/history` | Oldest-first samples in °C (or `null` for gaps), fixed `interval` in seconds, and newest sample `age` in seconds |
 | `POST /api/command` | URL-encoded `command`, such as `temp 25`, through the AC handler |
 | `POST /api/lamp/command` | URL-encoded `command`, such as `color red`, queued for BLE |
@@ -332,6 +379,9 @@ python3 test/test_lotus_protocol.py
 python3 test/test_lotus_protocol.py --reference /path/to/lotus-lamp-python
 g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_test.cpp -o /tmp/room-temperature-test
 /tmp/room-temperature-test
+g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/auto_cool_test.cpp -o /tmp/room-auto-cool-test
+/tmp/room-auto-cool-test
+python3 test/test_auto_cool_integration.py
 node test/test_web_ui.js
 ```
 

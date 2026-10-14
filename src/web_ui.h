@@ -80,6 +80,7 @@ const char kControlPage[] PROGMEM = R"HTML(
     #feedback.error { color:#b23c3c; }
     .send-again { display:block; margin:0 auto; border:0; padding:8px 12px;
       font-size:12px; color:var(--accent); background:transparent; }
+    .send-again.active { background:#eaf6f6; border-radius:10px; }
     .lamp { margin-top:18px; border:1px solid #d7e1e5; border-radius:24px;
       padding:22px; background:var(--paper); }
     .lamp h2 { margin:0; font-size:18px; }
@@ -158,6 +159,8 @@ const char kControlPage[] PROGMEM = R"HTML(
         <button id="sleep" class="key" data-command="sleep toggle" aria-pressed="false"><span class="key-icon" aria-hidden="true">☾</span>Sleep<span class="key-value">Night</span></button>
         <button id="light" class="key" data-command="light toggle" aria-pressed="false"><span class="key-icon" aria-hidden="true">☼</span>Light<span class="key-value">AC display</span></button>
       </div>
+      <button id="auto-cool" class="send-again" data-command="autocool toggle" aria-pressed="false">Auto-Cool: Off</button>
+      <p id="auto-cool-status" class="lamp-note" role="status" aria-live="polite">Turn on the AC in Cool mode to enable Auto-Cool.</p>
       <p id="feedback" role="status" aria-live="polite">Loading controller settings…</p>
       <button class="send-again" data-command="send">Send again</button>
     </section>
@@ -624,10 +627,19 @@ const char kControlPage[] PROGMEM = R"HTML(
       for (const button of buttons) {
         const command = button.dataset.command;
         let disabled = busy || state === null;
+        const auto = state && state.autoCool;
+        if (auto && auto.waiting) {
+          disabled ||= command !== 'off' && command !== 'autocool toggle';
+        }
+        if (state && command === 'autocool toggle' && !(auto && auto.enabled)) {
+          disabled ||= !state.power || state.mode !== 8 || state.econo || state.sleep || state.sensorStatus !== 'ready' ||
+            !Number.isFinite(state.measuredTemperature);
+        }
         if (state && command.startsWith('temp ')) {
+          const target = auto && auto.enabled ? auto.target : state.temperature;
           disabled ||= state.mode === 1;
-          disabled ||= command === 'temp up' && state.temperature >= 30;
-          disabled ||= command === 'temp down' && state.temperature <= 16;
+          disabled ||= command === 'temp up' && target >= 30;
+          disabled ||= command === 'temp down' && target <= 16;
         }
         button.disabled = disabled;
       }
@@ -640,10 +652,27 @@ const char kControlPage[] PROGMEM = R"HTML(
       const mode = modes[state.mode] || 'Unknown';
       const fan = state.turbo ? 'High' : (fans[state.fan] || 'Unknown');
       const capacity = capacities[state.capacity];
+      const auto = state.autoCool;
+      const autoEnabled = auto && auto.enabled;
+      $('auto-cool').textContent = autoEnabled ? 'Auto-Cool: On' : 'Auto-Cool: Off';
+      $('auto-cool').classList.toggle('active', Boolean(autoEnabled));
+      $('auto-cool').setAttribute('aria-pressed', String(Boolean(autoEnabled)));
+      $('auto-cool-status').textContent = auto && auto.cancelled ?
+        'Sensor lost during recovery. Restart cancelled; turn the AC on manually.' :
+        auto && auto.waiting ? 'Recovery: AC off. Restart in ' + auto.waitSeconds +
+          's. Power or Auto-Cool cancels the restart.' :
+        autoEnabled ? 'Target ' + auto.target + '°C · ' +
+          (!Number.isFinite(state.measuredTemperature) || state.sensorStatus !== 'ready' ?
+            'Paused: sensor unavailable.' : state.turbo ? 'Turbo cooling.' : 'Monitoring temperature.') +
+          (auto.recoveryUsed ? ' Recovery used; another cycle requires a reading below target.' : '') :
+        'Enable with AC on in Cool mode, Energy Save and Sleep off. Auto-Cool and its target are saved across restarts.';
+      if (auto && auto.saved === false)
+        $('auto-cool-status').textContent += ' Settings could not be saved to flash.';
+      $('power').dataset.command = auto && auto.waiting ? 'off' : 'power toggle';
       $('mode').textContent = mode;
       $('mode-value').textContent = mode;
       $('temperature').textContent = state.mode === 1 ? '--' :
-        String(state.turbo ? 16 : state.temperature);
+        String(autoEnabled ? auto.target : state.turbo ? 16 : state.temperature);
       $('units').textContent = state.mode === 1 ? '' : '°C';
       const sensorReady = state.sensorStatus === 'ready' &&
         typeof state.measuredTemperature === 'number' &&
@@ -664,6 +693,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       }
       const flags = [];
       if (state.turbo) flags.push('Turbo');
+      if (autoEnabled && state.turbo) flags.push('AC running at 16°C');
       if (state.econo) flags.push('Energy Save');
       if (state.sleep) flags.push('Sleep');
       if (state.horizontal || state.vertical) flags.push('Swing');
