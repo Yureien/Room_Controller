@@ -167,7 +167,7 @@ const char kControlPage[] PROGMEM = R"HTML(
         Temperature graph requires a browser with canvas support.
       </canvas>
       <p id="history-status" role="status">Loading temperature history…</p>
-      <p class="lamp-note">One sample per minute · Last 24 hours · History resets on restart.</p>
+      <p class="lamp-note">One sample every 5 seconds · Last 24 hours · History resets on restart.</p>
     </section>
     <section class="lamp" aria-label="LED light strip">
       <div class="lamp-head"><h2>LED strip</h2><span id="lamp-link" role="status">Not set up</span></div>
@@ -522,8 +522,8 @@ const char kControlPage[] PROGMEM = R"HTML(
       try {
         const response = await fetch('/api/temperature/history', {cache:'no-store',signal:abort.signal});
         const next = await response.json();
-        if (!response.ok || !Array.isArray(next.samples) || next.samples.length > 1440 ||
-            next.interval !== 60 || !Number.isFinite(next.age) ||
+        if (!response.ok || !Array.isArray(next.samples) || next.samples.length > 17280 ||
+            next.interval !== 5 || !Number.isFinite(next.age) ||
             !next.samples.every(v => v === null || Number.isFinite(v))) throw new Error('Invalid history');
         historyData = next;
         historyReceived = Date.now();
@@ -746,8 +746,8 @@ const char kControlPage[] PROGMEM = R"HTML(
     updateButtons();
     request();
     requestHistory();
-    setInterval(() => { if (!document.hidden) request(); }, 30000);
-    setInterval(requestHistory, 60000);
+    setInterval(() => { if (!document.hidden) request(); }, 5000);
+    setInterval(requestHistory, 5000);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) clearTimeout(lampPollTimer);
       else { request(); requestHistory(); }

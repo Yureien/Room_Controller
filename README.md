@@ -113,7 +113,7 @@ The LED section provides On/Off, ten preset colors, a browser color picker,
 brightness, 213 effects, animation speed, Connect/Reconnect, and Disconnect. Preset color and power
 buttons send immediately. Other selections transmit when you click **Apply**.
 
-The page refreshes settings every 30 seconds and history every minute, and polls
+The page refreshes settings and history every 5 seconds, and polls
 more frequently during queued lamp operations. Hidden tabs stop polling and
 refresh when reopened. It preserves unfinished color, slider, and effect edits.
 Connection and command errors are displayed; failed commands are not
@@ -126,7 +126,7 @@ effect names come from the upstream reference model and may vary by strip.
 
 ## Temperature sensor
 
-DS18B20 conversions run asynchronously every 30 seconds. Serial prints each
+DS18B20 conversions run asynchronously every 5 seconds. Serial prints each
 reading automatically; `sensor` prints the latest reading, and `state` includes
 it alongside the AC state. Periodic output pauses during Wi-Fi setup prompts.
 
@@ -134,9 +134,10 @@ A missing sensor or failed reading is reported as unavailable rather than
 showing an old or invalid value. Discovery retries automatically, so
 reconnecting the sensor does not require a restart.
 
-Temperature history records one reading per minute in a fixed ring buffer of
-1,440 samples (roughly 24 hours). Each sample uses a signed 16-bit temperature
-in hundredths of a degree; the entire buffer and bookkeeping use 2,888 bytes.
+Temperature history records one reading every 5 seconds in a fixed ring buffer of
+17,280 samples (roughly 24 hours). Each sample uses a signed 16-bit temperature
+in hundredths of a degree; the entire buffer and bookkeeping use 34,568 bytes
+(about 33.8 KiB). This is half the sample storage required by 32-bit floats.
 Missing readings and missed intervals appear as gaps. The oldest sample is
 overwritten when full. History stays in RAM and resets on restart; periodic
 measurements never write to flash.

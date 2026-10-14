@@ -8,7 +8,7 @@ const page = fs.readFileSync(path.join(__dirname, '../src/web_ui.h'), 'utf8');
 const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements = new Map();
 const strokes = [], dots = [], intervals = [], events = {}, calls = [];
-let moves = [], history = {interval:60, age:0, samples:[20, null, 21]};
+let moves = [], history = {interval:5, age:0, samples:[20, null, 21]};
 const ctx = {
   scale() {}, fillText() {}, beginPath() { moves = []; },
   moveTo(x, y) { moves.push(['move', x, y]); },
@@ -25,7 +25,7 @@ function element(id) {
   return elements.get(id);
 }
 const state = {ok:true, power:false, sensorStatus:'ready', measuredTemperature:20,
-  sensorIntervalSeconds:30, lamp:{configured:true, connected:false, busy:false,
+  sensorIntervalSeconds:5, lamp:{configured:true, connected:false, busy:false,
     ok:true, completed:0, color:'#ffffff', brightness:100, speed:50, solid:true}};
 const document = {hidden:false, getElementById:element, querySelectorAll(selector) {
   return selector === '.lamp button, .lamp input, .lamp select' ?
@@ -47,6 +47,8 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
   run(script);
   await settle();
+  assert.deepEqual(intervals.map(interval => interval.delay), [5000, 5000],
+    'State and history must both refresh every five seconds');
   assert.equal(element('lamp-connect').textContent, 'Connect');
   assert.equal(element('lamp-disconnect').disabled, true);
   assert.equal(element('lamp-link').textContent, 'Sleeping');
@@ -67,17 +69,17 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   await settle();
   assert.equal(calls.length, hiddenCalls + 2, 'Reopened tabs refresh state and history');
 
-  history = {interval:60, age:0, samples:Array(1440).fill(25)};
+  history = {interval:5, age:0, samples:Array(17280).fill(25)};
   await run('requestHistory()');
-  assert.match(element('history-status').textContent, /^1440 readings/);
-  history = {interval:60, age:0, samples:[null, null]};
+  assert.match(element('history-status').textContent, /^17280 readings/);
+  history = {interval:5, age:0, samples:[null, null]};
   await run('requestHistory()');
   assert.match(element('history-status').textContent, /^No readings yet/);
-  history = {interval:60, age:0, samples:[24.5]};
+  history = {interval:5, age:0, samples:[24.5]};
   dots.length = 0;
   await run('requestHistory()');
   assert.equal(dots.length, 1, 'Show a single startup reading');
-  history = {interval:60, age:0, samples:Array(1441).fill(25)};
+  history = {interval:5, age:0, samples:Array(17281).fill(25)};
   await run('requestHistory()');
   assert.match(element('history-status').textContent, /^History unavailable/);
   run('state.lamp.connected = true; renderLamp()');

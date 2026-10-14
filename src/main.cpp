@@ -27,7 +27,7 @@ const uint16_t kIrLed = 23;
 const uint8_t kTemperaturePin = 22;
 const uint8_t kActivityLedPin = 2;  // NodeMCU-32S blue user LED.
 const uint8_t kActivityLedOnLevel = HIGH;  // Reference board is active-high.
-const uint32_t kTemperatureInterval = 30000;
+const uint32_t kTemperatureInterval = TemperatureHistory::kIntervalSeconds * 1000;
 const uint32_t kTemperatureConversionTime = 750;  // DS18B20 at 12-bit resolution.
 const uint32_t kSettingsVersion = 1;
 const uint32_t kAcStateVersion = 1;
@@ -439,7 +439,7 @@ void printHelp() {
   Serial.println(F("  horizontal|vertical|light|turbo|econo|sleep"));
   Serial.println(F("    on|off|toggle"));
   Serial.println(F("  state / send / load <24 hexadecimal digits> / help"));
-  Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 30s)"));
+  Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
   Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
   Serial.println(F("  wifi forget"));
   Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));

@@ -9,8 +9,8 @@
 // implicit at a fixed cadence; missing readings occupy a slot to preserve gaps.
 class TemperatureHistory {
  public:
-  static constexpr uint16_t kCapacity = 1440;
-  static constexpr uint32_t kIntervalSeconds = 60;
+  static constexpr uint32_t kIntervalSeconds = 5;
+  static constexpr uint16_t kCapacity = 24 * 60 * 60 / kIntervalSeconds;
   static constexpr int16_t kMissing = INT16_MIN;
 
   void record(uint32_t now, bool available, float celsius) {
@@ -48,6 +48,6 @@ class TemperatureHistory {
     if (count_ < kCapacity) count_++;
   }
 };
-static_assert(sizeof(TemperatureHistory) <= 3 * 1024, "History RAM budget exceeded");
+static_assert(sizeof(TemperatureHistory) <= 34 * 1024, "History RAM budget exceeded");
 
 #endif
