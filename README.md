@@ -57,10 +57,11 @@ pio device monitor
 
 If `pio` is not on your PATH, use `~/.platformio/penv/bin/pio` instead.
 The monitor keeps DTR/RTS inactive; press EN/reset to see startup output after
-opening it. After idle, press **Enter**, wait for **Serial awake**, then send a
-command; the wake input is discarded because UART wake-up can lose characters. Serial
-input keeps the controller awake for 60 seconds; Wi-Fi setup prompts keep it
-awake throughout setup. A `[boot] reset=...` line identifies resets. Repeated boot lines
+opening it. With the default AC-powered build, send serial commands directly.
+If optional power savings are enabled, after idle press **Enter**, wait for
+**Serial awake**, then send a command; UART wake-up can lose characters, so the
+wake input is discarded. Serial input then keeps the controller awake for
+60 seconds. A `[boot] reset=...` line identifies resets. Repeated boot lines
 indicate board resets; Wi-Fi retries do not restart the firmware.
 
 ## Wi-Fi and address setup
@@ -196,6 +197,18 @@ full day's JSON out of the ESP32 heap.
 
 ## Power saving
 
+CPU/light-sleep/Wi-Fi power savings are **disabled by default** for AC-powered
+operation. The CPU stays at 240 MHz, automatic light sleep is disabled, Wi-Fi
+uses `WIFI_PS_NONE`, and serial commands do not require a wake-up Enter.
+To opt in, add this to the `nodemcu-32s` environment in `platformio.ini`:
+
+```ini
+build_flags = -DROOM_CONTROLLER_POWER_SAVING=1
+```
+
+`src/power_config.h` defaults the flag to `0` and accepts only `0` or `1`.
+SDK power-management support remains compiled so either mode can be built.
+
 Bluetooth stays off at boot, including when a strip is saved. A light command
 automatically starts Bluetooth and connects; **Connect/Reconnect** also starts a
 session without replaying settings. After 30 seconds without a lamp operation,
@@ -203,9 +216,11 @@ the worker disconnects and shuts down the NimBLE host and controller, releasing
 their allocations. **Disconnect** shuts down immediately and retains the strip
 selection. Scans and failed connections also shut Bluetooth down. The LED strip
 continues displaying its last settings independently of the ESP32 connection.
+This disconnect behavior remains active in both builds so the phone can take
+over the strip after the ESP32 releases its connection.
 
-`esp_pm_configure()` enables automatic light sleep and dynamic frequency scaling
-with an 80 MHz minimum and the full 240 MHz maximum. ESP-IDF controls frequency
+When the flag is `1`, `esp_pm_configure()` enables automatic light sleep and
+dynamic frequency scaling with an 80 MHz minimum and the full 240 MHz maximum. ESP-IDF controls frequency
 changes and sleep using its scheduler and driver locks. Application locks keep
 240 MHz and prevent sleep during commands, web requests, Wi-Fi connection
 attempts, setup prompts, and the entire Bluetooth session. The request locks
@@ -216,20 +231,21 @@ The main loop yields for 20 ms rather than waking every millisecond, and the
 BLE worker blocks indefinitely while Bluetooth is off. Temperature sensing and
 RAM history continue across light sleep without a restart.
 
-The blue onboard LED follows the application awake/240 MHz state: on during
-boot, requests, Wi-Fi connection attempts, BLE sessions, and serial/setup
-activity; off when those locks release for idle power saving. It remains on
-through the five-second request grace period and the 60-second serial window.
-Background temperature sampling does not turn it on. If power management fails
-to start, it stays on along with the CPU's 240 MHz fallback. The board's separate
-red power LED is wired directly to power and cannot be switched by firmware.
+The blue onboard LED works independently of the power-saving flag. It stays on
+through a BLE session or queued lamp work, and during an AC IR transmission plus
+500 ms afterward. When Auto-Cool is enabled, it alternates one second on and
+one second off, including while waiting for recovery; BLE/AC activity takes
+priority and blinking resumes afterward. Otherwise it is off after boot.
+Routine web polling and temperature sampling do not hold the LED on. The
+board's separate red power LED is wired directly to power and cannot be
+switched by firmware.
 The [Ai-Thinker schematic](https://robu.in/wp-content/uploads/2017/10/SKU-44682-datasheet.pdf)
 connects the blue LED from GPIO2 to ground; `kActivityLedOnLevel` in `main.cpp`
 can be changed to `LOW` for a board clone with inverted LED wiring.
 
 Wi-Fi remains associated so the web page stays reachable.
-`esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` enables modem sleep between the access
-point's DTIM beacons, during both idle and active use. This preserves DTIM
+With power savings enabled, `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` enables modem
+sleep between the access point's DTIM beacons, during both idle and active use. This preserves DTIM
 multicast reception for `.local` discovery. Request latency depends on the
 access point's DTIM interval. Automatic light sleep complements modem sleep;
 the Wi-Fi driver manages its wake-ups and power locks.

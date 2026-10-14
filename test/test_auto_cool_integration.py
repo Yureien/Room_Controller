@@ -18,6 +18,7 @@ for name in names:
 
 fixture = r'''
 #include "auto_cool.h"
+#include "activity_led.h"
 #include <array>
 #include <cassert>
 #include <cstdio>
@@ -34,6 +35,10 @@ uint32_t clockMs = 0, commandsSent = 0;
 uint32_t millis() { return clockMs; }
 uint64_t esp_timer_get_time() { return uint64_t(clockMs) * 1000; }
 void boostCpu() {}
+ActivityLed activityLed;
+const uint8_t kActivityLedPin = 2, kActivityLedOnLevel = 1;
+int ledLevel = 0;
+void digitalWrite(uint8_t, uint8_t level) { ledLevel = level; }
 struct SerialStub {
   void println(const char*) {}
   template<class... Args> void printf(const char*, Args...) {}
@@ -51,7 +56,7 @@ struct IRBluestarAc {
   void setPower(bool on) { raw[0] = on; if (raw[2] < 24) raw[2] = 24; raw[4] = 1; }
   void setTemp(uint8_t target) { raw[2] = target; raw[4] = 2; }
   void setTurbo(bool on) { raw[3] = on; raw[4] = 3; }
-  void send() { packets.push_back(raw); }
+  void send() { assert(ledLevel == kActivityLedOnLevel); packets.push_back(raw); }
 } ac;
 struct PreferencesStub {
   std::map<std::string, std::vector<uint8_t>> values;
@@ -94,6 +99,16 @@ void read(float temperature, uint32_t elapsed = 5000) {
   serviceAutoCool();
 }
 int main() {
+  ActivityLed led;
+  assert(!led.on(0, false, false));
+  assert(led.on(999, false, true) && !led.on(1000, false, true));
+  assert(!led.on(1999, false, true) && led.on(2000, false, true));
+  assert(led.on(1500, true, false) && led.on(1500, true, true));
+  led.acCommand(1000);
+  assert(led.on(1499, false, false) && !led.on(1500, false, false));
+  assert(led.on(1499, false, true) && !led.on(1500, false, true));
+  led.acCommand(UINT32_MAX - 200);
+  assert(led.on(100, false, false) && !led.on(300, false, false));
   ac.setTemp(20); autoCool.enable(20);
   assert(saveAcState() && saveAutoCoolSettings());
   assert(storage.getBytesLength("auto-cool") == 8 && storage.writes == 2);

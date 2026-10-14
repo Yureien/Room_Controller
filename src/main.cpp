@@ -23,6 +23,8 @@
 #include "lotus_lamp.h"
 #include "temperature_history.h"
 #include "auto_cool.h"
+#include "power_config.h"
+#include "activity_led.h"
 
 const uint16_t kIrLed = 23;
 const uint8_t kTemperaturePin = 22;
@@ -35,7 +37,7 @@ const uint32_t kAcStateVersion = 1;
 const uint32_t kConnectTimeout = 15000;
 const uint32_t kReconnectInterval = 30000;
 
-#if !CONFIG_PM_ENABLE || !CONFIG_FREERTOS_USE_TICKLESS_IDLE
+#if ROOM_CONTROLLER_POWER_SAVING && (!CONFIG_PM_ENABLE || !CONFIG_FREERTOS_USE_TICKLESS_IDLE)
 #error "Automatic light sleep requires the Arduino + ESP-IDF build and sdkconfig.defaults"
 #endif
 
@@ -70,12 +72,15 @@ bool networkUp = false;
 bool connecting = false;
 uint32_t connectionStarted = 0;
 uint32_t commandsSent = 0;
+#if ROOM_CONTROLLER_POWER_SAVING
 uint32_t lastUserActivity = 0;
 bool cpuBoosted = false;
 bool powerManagementReady = false;
 esp_pm_lock_handle_t cpuLock = nullptr, awakeLock = nullptr;
 uint32_t lastSerialActivity = 0;
 bool haveSerialActivity = false;
+#endif
+ActivityLed activityLed;
 SavedAcState lastSavedAcState{};
 bool haveSavedAcState = false;
 uint8_t normalFan = kBluestarFanLow;
@@ -103,20 +108,24 @@ bool saveAutoCoolSettings();
 bool saveAcState();
 
 void acquireActivePower() {
+#if ROOM_CONTROLLER_POWER_SAVING
   if (powerManagementReady && !cpuBoosted) {
     esp_pm_lock_acquire(cpuLock);
     esp_pm_lock_acquire(awakeLock);
     cpuBoosted = true;
-    digitalWrite(kActivityLedPin, kActivityLedOnLevel);
   }
+#endif
 }
 
 void boostCpu() {
+#if ROOM_CONTROLLER_POWER_SAVING
   lastUserActivity = millis();
   acquireActivePower();
+#endif
 }
 
 void beginPowerManagement() {
+#if ROOM_CONTROLLER_POWER_SAVING
   // Locks preserve 240 MHz and prevent sleep during IR, BLE, and setup. Keep
   // APB at 80 MHz even at the minimum CPU speed for UART and OneWire timing.
   esp_err_t error = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "controls", &cpuLock);
@@ -137,9 +146,20 @@ void beginPowerManagement() {
   boostCpu();
   Serial.println(F("[power] Automatic light sleep; CPU 80..240 MHz; Wi-Fi MIN_MODEM"));
   Serial.println(F("[power] Press Enter before serial commands after idle; serial stays awake for 60s."));
+#else
+  // Keep the opt-in SDK support compiled, but disable DFS and automatic sleep.
+#if CONFIG_PM_ENABLE
+  const esp_pm_config_esp32_t config = {240, 240, false};
+  const esp_err_t error = esp_pm_configure(&config);
+  if (error != ESP_OK)
+    Serial.printf("[power] Fixed CPU configuration failed: %s\n", esp_err_to_name(error));
+#endif
+  Serial.println(F("[power] Savings disabled; CPU fixed at 240 MHz; Wi-Fi sleep off"));
+#endif
 }
 
 void serviceCpuPower() {
+#if ROOM_CONTROLLER_POWER_SAVING
   if (!powerManagementReady) return;
   if (setupStep != SetupStep::None || connecting || lamp.needsFastCpu() ||
       (haveSerialActivity && millis() - lastSerialActivity < 60000)) {
@@ -150,8 +170,13 @@ void serviceCpuPower() {
     esp_pm_lock_release(awakeLock);
     esp_pm_lock_release(cpuLock);
     cpuBoosted = false;
-    digitalWrite(kActivityLedPin, !kActivityLedOnLevel);
   }
+#endif
+}
+
+void serviceActivityLed() {
+  const bool on = activityLed.on(millis(), lamp.needsFastCpu(), autoCool.enabled());
+  digitalWrite(kActivityLedPin, on ? kActivityLedOnLevel : !kActivityLedOnLevel);
 }
 
 const char *sensorStatusName() {
@@ -237,8 +262,11 @@ bool temperatureAvailable() {
 
 void sendAcPacket() {
   boostCpu();
+  activityLed.acCommand(millis());
+  digitalWrite(kActivityLedPin, kActivityLedOnLevel);
   ac.send();
   commandsSent++;
+  activityLed.acCommand(millis());  // Keep the indication visible after IR ends.
 }
 
 void restoreAutoCoolTarget() {
@@ -477,10 +505,11 @@ void connectWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(settings.ssid, settings.password);
-  // Sleep between DTIM beacons while preserving multicast/mDNS reception.
-  const esp_err_t error = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+  // Optional modem sleep preserves DTIM/mDNS; AC-powered builds stay awake.
+  const esp_err_t error = esp_wifi_set_ps(
+      ROOM_CONTROLLER_POWER_SAVING ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
   if (error != ESP_OK)
-    Serial.printf("Wi-Fi modem sleep setup failed: %s\n", esp_err_to_name(error));
+    Serial.printf("Wi-Fi sleep configuration failed: %s\n", esp_err_to_name(error));
   connectionStarted = millis();
   connecting = true;
   Serial.print(F("Connecting to Wi-Fi: "));
@@ -1056,6 +1085,7 @@ void readSerial() {
   static size_t length = 0;
   static bool overflow = false;
   static bool previousCr = false;
+#if ROOM_CONTROLLER_POWER_SAVING
   static bool uartWakeHandled = false;
   const bool uartWake = powerManagementReady &&
       esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART;
@@ -1079,6 +1109,7 @@ void readSerial() {
       Serial.println(F("Serial awake. Enter your command."));
   }
   uartWakeHandled = uartWake;
+#endif
   // A noisy or continuously active serial port must not starve the main loop.
   size_t processed = 0;
   while (Serial.available() && processed++ < 64) {
@@ -1162,5 +1193,6 @@ void loop() {
   }
   serviceNetwork();
   serviceCpuPower();
+  serviceActivityLed();
   delay(20);
 }
