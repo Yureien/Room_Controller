@@ -113,7 +113,7 @@ struct LotusLampController::Worker {
         if (!device->isConnectable()) continue;
         String name(device->getName().c_str());
         String lower = name;
-          lower.toLowerCase();
+        lower.toLowerCase();
         const bool likely = device->isAdvertisingService(NimBLEUUID(uint16_t(0xfff0))) ||
             lower.indexOf("melk") >= 0 || lower.indexOf("lotus") >= 0 ||
             lower.indexOf("led") >= 0 || lower.indexOf("rgb") >= 0 || lower.indexOf("lamp") >= 0;
@@ -122,8 +122,8 @@ struct LotusLampController::Worker {
         snprintf(out.address, sizeof(out.address), "%s", device->getAddress().toString().c_str());
         snprintf(out.name, sizeof(out.name), "%s", name.length() ? name.c_str() : "Unnamed device");
         out.type = device->getAddressType();
-          out.rssi = device->getRSSI();
-          out.likely = likely;
+        out.rssi = device->getRSSI();
+        out.likely = likely;
       }
     }
     scan->clearResults();
@@ -202,12 +202,23 @@ struct LotusLampController::Worker {
           message(result, "Lamp command written over Bluetooth.");
           switch (job.control.action) {
             case lotus::Action::Power:
-              result.settings.power = job.control.values[0]; result.settings.powerKnown = true; break;
+              result.settings.power = job.control.values[0];
+              result.settings.powerKnown = true;
+              break;
             case lotus::Action::Color:
-              std::memcpy(result.settings.color, job.control.values, 3); result.settings.solid = true; break;
-            case lotus::Action::Brightness: result.settings.brightness = job.control.values[0]; break;
-            case lotus::Action::Effect: result.settings.effect = job.control.values[0]; result.settings.solid = false; break;
-            case lotus::Action::Speed: result.settings.speed = job.control.values[0]; break;
+              std::memcpy(result.settings.color, job.control.values, 3);
+              result.settings.solid = true;
+              break;
+            case lotus::Action::Brightness:
+              result.settings.brightness = job.control.values[0];
+              break;
+            case lotus::Action::Effect:
+              result.settings.effect = job.control.values[0];
+              result.settings.solid = false;
+              break;
+            case lotus::Action::Speed:
+              result.settings.speed = job.control.values[0];
+              break;
           }
           vTaskDelay(pdMS_TO_TICKS(job.control.action == lotus::Action::Power ? 500 : 100));
         } else {
@@ -241,7 +252,6 @@ struct LotusLampController::Worker {
           scanDevices(result);
         } else {
           if (connect(job, result)) write(job, result);
-
         }
       }
       owner.connected_.store(!shutdownPending && !shutdownFault && client && client->isConnected() && writer);

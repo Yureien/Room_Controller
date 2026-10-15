@@ -23,7 +23,8 @@ class TemperatureSensor {
   DeviceAddress address_{};
   TemperatureReading reading_;
   Phase phase_ = Phase::Discover;
-  uint32_t started_ = 0, conversionSampleSeconds_ = 0;
+  uint32_t started_ = 0;
+  int64_t conversionReadyUs_ = 0;
   uint8_t searched_ = 0;
   bool parasite_ = false;
   bool startConversion();

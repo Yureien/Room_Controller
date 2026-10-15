@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <cstddef>
 #include <Preferences.h>
 #include <IRremoteESP8266.h>
 #include <ir_Bluestar.h>
@@ -35,6 +36,9 @@ class AcController {
   static_assert(sizeof(SavedAutoCool) == 8, "Unexpected Auto-Cool settings size");
 
   static_assert(sizeof(SavedAcState) == 20, "Legacy AC NVS layout changed");
+  static_assert(offsetof(SavedAcState, raw) == 4 &&
+                offsetof(SavedAcState, normalFan) == 16 &&
+                offsetof(SavedAutoCool, target) == 4, "Legacy AC NVS offsets changed");
   IRBluestarAc ac;
   const uint16_t irPin;
   AutoCool autoCool;

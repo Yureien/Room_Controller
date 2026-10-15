@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <atomic>
+#include <cstddef>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include "lotus_protocol.h"
@@ -30,6 +31,10 @@ class LotusLampController {
     uint8_t power, powerKnown, solid;
   };
   static_assert(sizeof(Settings) == 156, "Legacy lamp NVS layout changed");
+  static_assert(offsetof(Settings, address) == 4 &&
+                offsetof(Settings, service) == 70 &&
+                offsetof(Settings, addressType) == 144 &&
+                offsetof(Settings, power) == 151, "Legacy lamp NVS offsets changed");
   struct Device {
     char address[18], name[48];
     uint8_t type;

@@ -9,6 +9,9 @@
 // implicit at a fixed cadence; missing readings occupy a slot to preserve gaps.
 class TemperatureHistory {
  public:
+  TemperatureHistory() = default;
+  TemperatureHistory(const TemperatureHistory&) = delete;
+  TemperatureHistory& operator=(const TemperatureHistory&) = delete;
   static constexpr uint32_t kIntervalSeconds = 5;
   static constexpr uint16_t kCapacity = 24 * 60 * 60 / kIntervalSeconds;
   static constexpr int16_t kMissing = INT16_MIN;

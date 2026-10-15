@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <cstddef>
 #include <Preferences.h>
 
 class ControllerNetwork {
@@ -30,6 +31,9 @@ class ControllerNetwork {
   };
 
   static_assert(sizeof(NetworkSettings) == 168, "Legacy network NVS layout changed");
+  static_assert(offsetof(NetworkSettings, ssid) == 4 &&
+                offsetof(NetworkSettings, password) == 37 &&
+                offsetof(NetworkSettings, hostname) == 102, "Legacy network NVS offsets changed");
   NetworkSettings settings{};
   Preferences storage;
   bool storageReady = false, haveSaved = false;

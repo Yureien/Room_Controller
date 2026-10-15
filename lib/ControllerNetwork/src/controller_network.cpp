@@ -24,6 +24,7 @@ bool ControllerNetwork::validHostname(const String &name) {
 }
 
 bool ControllerNetwork::validPassword(const String &password) {
+  if (password.length() != strlen(password.c_str())) return false;
   if (password.length() == 0) return true;  // Open network.
   if (password.length() >= 8 && password.length() <= 63) return true;
   if (password.length() != 64) return false;
@@ -54,7 +55,10 @@ void ControllerNetwork::begin(void (*onActivity)()) {
   NetworkSettings saved{};
   if (storage.getBytesLength("network") == sizeof(saved) &&
       storage.getBytes("network", &saved, sizeof(saved)) == sizeof(saved) &&
-      validSettings(saved)) { settings = saved; haveSaved = true; }
+      validSettings(saved)) {
+    settings = saved;
+    haveSaved = true;
+  }
 }
 
 bool ControllerNetwork::saveSettings(const NetworkSettings &value) {
@@ -174,7 +178,8 @@ bool ControllerNetwork::connected() const {
 String ControllerNetwork::ip() const { return WiFi.localIP().toString(); }
 
 bool ControllerNetwork::setCredentials(const String& ssid, const String& password) {
-  if (!ssid.length() || ssid.length() > 32 || !validPassword(password)) return false;
+  if (!ssid.length() || ssid.length() > 32 || ssid.length() != strlen(ssid.c_str()) ||
+      !validPassword(password)) return false;
   NetworkSettings updated = settings;
   memset(updated.ssid, 0, sizeof(updated.ssid));
   memset(updated.password, 0, sizeof(updated.password));

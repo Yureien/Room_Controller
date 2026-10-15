@@ -12,6 +12,7 @@ let historyAbort = null;
 let stateAbort = null;
 let successfulReplies = 0;
 let currentSession = null;
+let currentRevision = -1;
 const retiredSessions = [];
 
 // A command gets the browser's connection and radio budget immediately.
@@ -217,7 +218,7 @@ async function requestLamp(command, field = null) {
     }
     if (!validState(next) || !next.lamp) throw new Error('Invalid controller response');
     if (retiredSessions.includes(next.session) ||
-        (state && next.session === state.session && next.revision < state.revision)) return;
+        (next.session === currentSession && next.revision < currentRevision)) return;
     if (!response.ok || !next.ok) lampLocalError = next.message || 'Lamp command rejected.';
     else if (field) lampPendingEdit = {field, completed:next.lamp.completed, session:next.session};
     if (!render(next)) return;
@@ -265,8 +266,7 @@ function render(next) {
   ++successfulReplies;
   // Concurrent requests may arrive out of order. Session changes after a
   // restart allow revisions to start again at one.
-  if (state && next.session === state.session && Number.isSafeInteger(next.revision) &&
-      Number.isSafeInteger(state.revision) && next.revision < state.revision) return false;
+  if (next.session === currentSession && next.revision < currentRevision) return false;
   if (retiredSessions.includes(next.session)) return false;
   if (currentSession && next.session !== currentSession) {
     retiredSessions.push(currentSession);
@@ -277,6 +277,7 @@ function render(next) {
     drawHistory();
   }
   currentSession = next.session;
+  currentRevision = next.revision;
   state = next;
   renderLamp();
   const mode = modes[state.mode] || 'Unknown';

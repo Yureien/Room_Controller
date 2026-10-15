@@ -245,8 +245,10 @@ slot generations prevent a late completion from affecting a reused slot. Reply
 startup can wait for the next TCP poll (normally up to roughly 500 ms), and full
 history loads progressively across many pages. This bounds history work and
 isolates slow network transfers; it does not make IR transmissions instantaneous.
-Deferred API responses restore a ten-second TCP inactivity timeout so lost or
-non-reading peers eventually release their requests and dispatch slots.
+Deferred API responses restore a ten-second receive inactivity timeout. Peers
+that stop sending TCP traffic release their requests and dispatch slots after
+that interval. This is not a total request deadline: received traffic can extend
+the connection lifetime.
 
 ## Power saving
 
@@ -539,3 +541,8 @@ For manual inspection: `python3 scripts/embed_web.py --output /tmp/web_ui.h`.
 Browser boot-session changes retire obsolete replies and pending lamp operation
 tracking while preserving unsent field edits. Dense history lines retain isolated
 sample markers without drawing a circle for every connected point.
+
+The sensor conversion deadline uses monotonic microseconds, avoiding an early
+read at a millisecond boundary. Delayed reads retain the conversion completion
+time rather than acquiring false freshness after a stalled loop. Legacy NVS
+record sizes and key field offsets are checked at compile time.

@@ -33,7 +33,7 @@ bool TemperatureSensor::startConversion() {
   // delays. Preserve its parasite-power handling explicitly for this address.
   bus_.write(0x44, parasite_);
   started_ = millis();
-  conversionSampleSeconds_ = (esp_timer_get_time() + 750000) / 1000000;
+  conversionReadyUs_ = esp_timer_get_time() + kConversionMs * 1000;
   phase_ = Phase::Convert;
   return true;
 }
@@ -57,7 +57,7 @@ bool TemperatureSensor::service() {
       if (!startConversion()) return unavailable();
       return false;
     case Phase::Convert: {
-      if (elapsed < kConversionMs) return false;
+      if (esp_timer_get_time() < conversionReadyUs_) return false;
       // Do not reset/release the strong data-line pull-up during conversion.
       bus_.depower();
       // Dallas validates scratchpad CRC and rejects disconnected/all-zero data.
@@ -65,7 +65,7 @@ bool TemperatureSensor::service() {
       if (!std::isfinite(value) || value < -55 || value > 125) return unavailable();
       reading_.status = TemperatureReading::Status::Ready;
       reading_.celsius = value;
-      reading_.sampledAtSeconds = conversionSampleSeconds_;
+      reading_.sampledAtSeconds = conversionReadyUs_ / 1000000;
       phase_ = Phase::Retry;
       // Keep cadence measured from conversion start, without catch-up bursts.
       return true;
