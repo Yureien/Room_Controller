@@ -254,9 +254,13 @@ the connection lifetime.
 
 ## Power saving
 
-CPU/light-sleep/Wi-Fi power savings are **disabled by default** for AC-powered
-operation. The CPU stays at 240 MHz, automatic light sleep is disabled, Wi-Fi
-uses `WIFI_PS_NONE`, and serial commands do not require a wake-up Enter.
+CPU scaling and automatic light sleep are **disabled by default** for AC-powered
+operation. The CPU stays at 240 MHz, and serial commands do not require a wake-up
+Enter. Wi-Fi uses `WIFI_PS_MIN_MODEM` in both builds because the pinned ESP-IDF
+software coexistence implementation requires modem sleep before Bluetooth starts.
+This radio requirement is independent of optional CPU savings; `WIFI_PS_NONE`
+can abort the SDK during lamp Scan/Connect. That coexistence abort is separate
+from a supply-voltage brownout reset.
 To opt in, append the power-saving define to the existing `build_flags` in the
 `nodemcu-32s` environment in `platformio.ini`:
 
@@ -303,11 +307,13 @@ connects the blue LED from GPIO2 to ground; `kActivityLedOnLevel` in `src/board_
 can be changed to `LOW` for a board clone with inverted LED wiring.
 
 Wi-Fi remains associated so the web page stays reachable.
-With power savings enabled, `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` enables modem
-sleep between the access point's DTIM beacons, during both idle and active use. This preserves DTIM
-multicast reception for `.local` discovery. Request latency depends on the
-access point's DTIM interval. Automatic light sleep complements modem sleep;
-the Wi-Fi driver manages its wake-ups and power locks.
+`WIFI_PS_MIN_MODEM` enables modem sleep between the access point's DTIM beacons
+in both builds, during idle and active use. Arduino's remembered setting and the
+ESP-IDF driver setting use the same policy, including after reconnect. This
+preserves DTIM multicast reception for `.local` discovery. Request latency
+depends on the access point's DTIM interval. With optional CPU savings enabled,
+automatic light sleep complements modem sleep; the Wi-Fi driver manages its
+wake-ups and power locks.
 
 `CONFIG_PM_ENABLE` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE` are enabled in
 `sdkconfig.defaults`. Adding C++ flags to the old precompiled Arduino SDK would

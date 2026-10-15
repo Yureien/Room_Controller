@@ -1,6 +1,5 @@
 #include "controller_network.h"
 #include "input_utils.h"
-#include "power_config.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <esp_wifi.h>
@@ -10,6 +9,9 @@ namespace {
 constexpr uint32_t kSettingsVersion = 1;
 constexpr uint32_t kConnectTimeout = 15000;
 constexpr uint32_t kReconnectInterval = 30000;
+// ESP-IDF 4.4 software coexistence requires modem sleep before BLE starts.
+// This radio policy is independent of optional CPU scaling/automatic light sleep.
+constexpr wifi_ps_type_t kWifiPowerSave = WIFI_PS_MIN_MODEM;
 }
 
 bool ControllerNetwork::validHostname(const String &name) {
@@ -92,14 +94,15 @@ void ControllerNetwork::connect() {
   WiFi.persistent(false);  // Credentials are managed in our NVS entry.
   // Arduino reapplies this preference from its asynchronous STA_START event.
   // Setting only the IDF driver below could be overwritten after begin().
-  WiFi.setSleep(ROOM_CONTROLLER_POWER_SAVING ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+  // setSleep() also returns false when the remembered preference already matches.
+  // Keep the driver error check below as the meaningful configuration diagnostic.
+  WiFi.setSleep(kWifiPowerSave);
   WiFi.setHostname(settings.hostname);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(settings.ssid, settings.password);
-  // Optional modem sleep preserves DTIM/mDNS; AC-powered builds stay awake.
-  const esp_err_t error = esp_wifi_set_ps(
-      ROOM_CONTROLLER_POWER_SAVING ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+  // Use the same coexistence policy in the driver and Arduino STA_START path.
+  const esp_err_t error = esp_wifi_set_ps(kWifiPowerSave);
   if (error != ESP_OK)
     Serial.printf("Wi-Fi sleep configuration failed: %s\n", esp_err_to_name(error));
   connectionStarted = millis();

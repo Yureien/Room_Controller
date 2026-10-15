@@ -42,11 +42,14 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
 
 ## Constraints to preserve
 
-- Power savings are opt-in: `ROOM_CONTROLLER_POWER_SAVING` defaults to `0` in
-  `lib/ControllerCore/src/power_config.h`. Default CPU is fixed at 240 MHz,
-  Wi-Fi sleep is off, and
-  UART wake handling is disabled. With flag `1`, preserve SDK-managed sleep/scaling
-  and acquire the existing CPU/no-sleep locks before IR; do not change CPU clocks manually.
+- CPU scaling/automatic light sleep are opt-in: `ROOM_CONTROLLER_POWER_SAVING`
+  defaults to `0` in `lib/ControllerCore/src/power_config.h`. Default CPU is fixed
+  at 240 MHz; automatic light sleep and UART wake handling are disabled. Wi-Fi
+  always uses
+  `WIFI_PS_MIN_MODEM` in both Arduino and driver configuration paths: the pinned
+  SDK requires it before BLE startup for coexistence. With flag `1`, preserve
+  SDK-managed sleep/scaling and acquire the existing CPU/no-sleep locks before
+  IR; do not change CPU clocks manually.
 - `lib/ControllerCore/src/activity_led.h` is independent of power management:
   BLE/AC activity wins
   over the one-second on/off blink when Auto-Cool Turbo is active and AC is on.

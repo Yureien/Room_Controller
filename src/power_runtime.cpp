@@ -65,7 +65,8 @@ void begin() {
   if (error != ESP_OK)
     Serial.printf("[power] Fixed CPU configuration failed: %s\n", esp_err_to_name(error));
 #endif
-  Serial.println(F("[power] Savings disabled; CPU fixed at 240 MHz; Wi-Fi sleep off"));
+  Serial.println(F("[power] CPU fixed at 240 MHz; automatic light sleep off; "
+                   "Wi-Fi MIN_MODEM for BLE coexistence"));
 #endif
 }
 
