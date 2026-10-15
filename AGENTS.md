@@ -33,10 +33,14 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
   `ControllerWeb`'s dispatch bridge. BLE objects stay on LotusLamp's worker;
   bounded queues/atomics connect it to the loop. No reverse library dependencies
   on app globals; no copying large owners or destroying live task/callback owners.
-- `web/` contains HTML/CSS/JS. `scripts/embed_web.py` emits only
+- `web/` contains the responsive page/styles, `theme.js` (head bootstrap),
+  `history_chart.js` (cached history rendering/ranges), and `controller.js`
+  (local transport/commands). `scripts/embed_web.py` emits only
   `$BUILD_DIR/generated/web_ui.h`; only `controller_web.cpp` includes it. The
   pre-build hook generates before scanning and preserves `IDF_COMPONENT_MANAGER=0`
-  for app/bootloader. No external assets or separate site deployment.
+  for app/bootloader. Optional SRI-pinned uPlot loads from a CDN asynchronously;
+  controls and the local canvas fallback must work without it. Chart code must
+  not fetch history or create polling loops. No separate site deployment.
 - Keep dependency/toolchain pins and the Git IR fork's `bluestar-ie318yku` branch.
   PlatformIO compiles library sources; do not register them again in src CMake.
 

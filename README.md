@@ -89,7 +89,8 @@ Repeating the current hostname does not reconnect or rewrite flash.
 
 Open **http://esp32.local/** from a device on the same network. Serial also
 prints an IP-address URL for clients that cannot resolve `.local`. The page
-is served entirely by the ESP32, without internet access or external assets.
+is served by the ESP32. Controls and a basic history graph work without internet
+access; an optional interactive graph enhancement loads from a public CDN.
 The Room Controller project rename retains the default and any saved hostname.
 
 Network commands are serial-only:
@@ -110,6 +111,15 @@ start or end with a hyphen. The example becomes **http://room-controller.local/*
 ## Room Controller website
 
 The page contains **Blue Star AC**, **Room temperature history**, and **LED strip** sections.
+On desktop and wider tablets, the AC remote sits on the left with history and
+lighting on the right. Smaller tablets and phones use a single column, with
+touch-friendly controls and no separate mobile page.
+
+The header's **Theme** control offers System, Light, and Dark. System is the
+default and follows OS appearance changes. Explicit choices persist in this
+browser only; theme changes send no device command or flash write. If browser
+storage is unavailable, the page and theme control still work.
+
 Measured temperature appears separately from the AC set temperature, including
 while the AC is off or in Fan-only mode.
 
@@ -207,10 +217,23 @@ Missing readings and missed intervals appear as gaps. The oldest sample is
 overwritten when full. History stays in RAM and resets on restart; periodic
 measurements never write to flash.
 
-The browser draws the graph with a small built-in canvas renderer, without
-external libraries, CDN assets, or internet access. It labels times using the
-browser's clock and the sample ages, so the ESP32 does not need NTP. History is
-fetched separately from settings in pages of at most 128 samples (under 1.2 KiB
+The browser draws a local canvas graph immediately, then optionally enhances it
+with [uPlot 1.6.32](https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js)
+and its [pinned stylesheet](https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css)
+from jsDelivr. Integrity-checked assets load asynchronously; offline access, a
+blocked/slow CDN, or chart errors leave the basic graph and all local controls
+available. No chart data is sent to an external API.
+
+**1h / 6h / 24h** selects a trailing window of cached history (24h initially),
+without extra history requests. The selected range shows its reading count and
+minimum/maximum; unloaded ranges, missing readings, and stale cached data are
+identified explicitly. Hover, touch, or focus the graph and use Left/Right or
+Home/End to inspect a point's local time and temperature. Missing samples say
+“No reading”; one-point history uses the basic graph. Page touch scrolling
+remains available, with no drag zoom or animated redraws.
+
+Times use the browser's clock and sample ages, so the ESP32 does not need NTP.
+History is fetched separately from settings in pages of at most 128 samples (under 1.2 KiB
 per response). The browser loads the retained day progressively, leaving 100 ms
 between pages and pausing backfill while controls are sending. Once caught up,
 it requests only new samples every five seconds, instead of downloading the
@@ -550,12 +573,15 @@ state revisions, and loop scheduling; `src/serial_console.cpp` handles prompts
 and the bounded one-line-per-loop parser. `src/board_config.h` holds GPIOs.
 The existing power policy is mechanically relocated into `src/power_runtime.*`.
 
-Browser source lives in `web/index.html`, `web/style.css`, and
-`web/controller.js`. The PlatformIO pre-build hook invokes the stdlib-only
+Browser source lives in `web/index.html`, `web/style.css`, `web/theme.js`,
+`web/history_chart.js`, and `web/controller.js`. Theme bootstrap is embedded in
+the head before styles; history rendering loads before controller transport.
+The PlatformIO pre-build hook invokes the stdlib-only
 `scripts/embed_web.py`, generating `$BUILD_DIR/generated/web_ui.h` before
 compilation. Every build notices asset edits; unchanged generated content keeps
-its timestamp. Only `controller_web.cpp` includes the page. No Node dependencies,
-external assets, filesystem upload, or separate website deployment is involved.
+its timestamp. Only `controller_web.cpp` includes the page. Builds use no Node
+dependencies and never fetch or embed the optional CDN files. No filesystem
+upload or separate website deployment is involved.
 For manual inspection: `python3 scripts/embed_web.py --output /tmp/web_ui.h`.
 Browser boot-session changes retire obsolete replies and pending lamp operation
 tracking while preserving unsent field edits. Dense history lines retain isolated

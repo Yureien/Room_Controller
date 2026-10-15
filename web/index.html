@@ -5,16 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#153744">
   <title>Room Controller</title>
+  <!-- THEME_JS -->
   <!-- CONTROLLER_CSS -->
 </head>
 <body>
   <main>
     <header>
       <div><p class="eyebrow">AC · Temperature · Lights</p><h1>Room Controller</h1></div>
+      <div class="header-controls">
       <div id="connection" class="connection" role="status">
         <span class="dot"></span><span id="connection-text">Connecting</span>
       </div>
+      <label class="theme-control" for="theme-preference">Theme
+        <select id="theme-preference" aria-label="Color theme">
+          <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+        </select>
+      </label>
+      </div>
     </header>
+    <div class="dashboard">
     <section class="remote" aria-label="Air conditioner remote">
       <h2 class="section-title">Blue Star AC</h2>
       <div class="screen" aria-label="Controller settings">
@@ -55,13 +64,28 @@
       <p id="feedback" role="status" aria-live="polite">Loading controller settings…</p>
       <button class="send-again" data-command="send">Send again</button>
     </section>
-    <section class="history" aria-label="Temperature history">
-      <h2>Room temperature</h2>
-      <canvas id="temperature-chart" role="img" aria-label="Temperature history in degrees Celsius">
-        Temperature graph requires a browser with canvas support.
-      </canvas>
+    <div class="side-column">
+    <section class="history" aria-labelledby="history-title">
+      <div class="history-head">
+        <div><p class="eyebrow">Room sensor</p><h2 id="history-title">Temperature history</h2></div>
+        <div class="ranges" role="group" aria-label="History time range">
+          <button data-history-hours="1" aria-pressed="false">1h</button>
+          <button data-history-hours="6" aria-pressed="false">6h</button>
+          <button data-history-hours="24" aria-pressed="true">24h</button>
+        </div>
+      </div>
+      <p id="history-summary">Waiting for measured temperatures</p>
+      <div id="history-plot" class="history-plot" tabindex="0" role="group"
+           aria-label="Temperature history. Use left and right arrows to inspect readings."
+           aria-describedby="history-summary history-inspection">
+        <div id="history-enhanced" hidden></div>
+        <canvas id="temperature-chart" role="img" aria-label="Temperature history in degrees Celsius">
+          Temperature graph requires a browser with canvas support.
+        </canvas>
+      </div>
+      <div class="chart-caption"><span id="history-inspection">Hover, touch, or use arrow keys to inspect</span><span id="chart-mode">Basic chart</span></div>
       <p id="history-status" role="status">Loading temperature history…</p>
-      <p class="lamp-note">One sample every 5 seconds · Last 24 hours · History resets on restart.</p>
+      <p class="lamp-note">One sample every 5 seconds · Gaps mean no reading · Resets on restart</p>
     </section>
     <section class="lamp" aria-label="LED light strip">
       <div class="lamp-head"><h2>LED strip</h2><span id="lamp-link" role="status">Not set up</span></div>
@@ -84,6 +108,7 @@
         <button class="swatch" style="background:#ffc0cb" data-lamp-command="color #ffc0cb" title="Pink" aria-label="Pink" aria-pressed="false"></button>
         <button class="swatch" style="background:#ffffff" data-lamp-command="color #ffffff" title="White" aria-label="White" aria-pressed="false"></button>
       </div>
+      <div class="lamp-settings">
       <div class="lamp-row">
         <label for="lamp-color">Color</label><input id="lamp-color" type="color" value="#ffffff">
         <button id="lamp-color-apply">Apply color</button>
@@ -334,16 +359,20 @@
         <output id="lamp-speed-value" for="lamp-speed">50%</output>
         <button id="lamp-speed-apply">Apply</button>
       </div>
+      </div>
       <p id="lamp-feedback" role="status" aria-live="polite">Set up over serial: lamp scan, then lamp pair &lt;number&gt;.</p>
       <p class="lamp-note">Connects when you send a setting; Bluetooth sleeps after 30s idle.
         Strip settings stay active. Controls show the last requested settings.</p>
     </section>
+    </div>
+    </div>
     <footer>
       Settings reflect this controller. Changes made with the physical remote<br>
       are not received here.
       <span id="address"></span>
     </footer>
   </main>
+  <!-- HISTORY_JS -->
   <!-- CONTROLLER_JS -->
 </body>
 </html>

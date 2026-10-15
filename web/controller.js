@@ -23,58 +23,7 @@ function cancelBackgroundReads() {
 }
 
 function drawHistory() {
-  const canvas = $('temperature-chart');
-  const width = canvas.clientWidth;
-  const height = 180;
-  if (!width) return;
-  const scale = window.devicePixelRatio || 1;
-  canvas.width = Math.round(width * scale);
-  canvas.height = Math.round(height * scale);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.scale(scale, scale);
-  ctx.font = '11px system-ui';
-  ctx.fillStyle = '#677b83';
-  const data = historyData && historyData.samples;
-  const valid = data ? data.filter(Number.isFinite) : [];
-  if (!valid.length) {
-    ctx.fillText('Waiting for measured temperatures', 12, 85);
-    return;
-  }
-  const low = Math.floor(Math.min(...valid) - 0.5);
-  const high = Math.ceil(Math.max(...valid) + 0.5);
-  const left = 47, top = 12, right = width - 8, bottom = height - 30;
-  const x = i => left + i * (right - left) / Math.max(1, data.length - 1);
-  const y = v => bottom - (v - low) * (bottom - top) / (high - low);
-  for (let i = 0; i <= 2; i++) {
-    const v = low + (high - low) * i / 2;
-    ctx.strokeStyle = '#dce5e8';
-    ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(right, y(v)); ctx.stroke();
-    ctx.fillText(v.toFixed(1) + '°C', 0, y(v) + 4);
-  }
-  ctx.strokeStyle = '#087d8c'; ctx.lineWidth = 2;
-  ctx.beginPath();
-  let joined = false;
-  data.forEach((v, i) => {
-    if (!Number.isFinite(v)) { joined = false; return; }
-    if (joined) ctx.lineTo(x(i), y(v)); else ctx.moveTo(x(i), y(v));
-    joined = true;
-  });
-  ctx.stroke();
-  // Dense runs already form a line; retain markers for sparse/isolated samples.
-  ctx.fillStyle = '#087d8c';
-  data.forEach((v, i) => {
-    if (!Number.isFinite(v) || (data.length > 256 &&
-        (Number.isFinite(data[i - 1]) || Number.isFinite(data[i + 1])))) return;
-    ctx.beginPath(); ctx.arc(x(i), y(v), 1.5, 0, Math.PI * 2); ctx.fill();
-  });
-  ctx.fillStyle = '#677b83';
-  const newest = historyReceived - historyData.age * 1000;
-  const label = time => new Date(time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  ctx.fillText(label(newest - (data.length - 1) * historyData.interval * 1000), left, height - 8);
-  ctx.textAlign = 'right'; ctx.fillText(label(newest), right, height - 8);
-  canvas.setAttribute('aria-label', valid.length + ' temperature readings, ' +
-    Math.min(...valid).toFixed(2) + ' to ' + Math.max(...valid).toFixed(2) + ' degrees Celsius');
+  RoomHistory.update(historyData, historyReceived);
 }
 
 function scheduleHistory(delay) {
@@ -121,15 +70,10 @@ async function requestHistory() {
     historyData = next;
     historyReceived = Date.now();
     more = next.more;
-    const valid = next.samples.filter(Number.isFinite);
-    $('history-status').textContent = (valid.length ? valid.length + ' readings · Min ' +
-      Math.min(...valid).toFixed(2) + '°C · Max ' + Math.max(...valid).toFixed(2) +
-      '°C · Gaps indicate missing readings.' : 'No readings yet. Check the sensor.') +
-      (more ? ' Loading history…' : '');
     drawHistory();
   } catch (error) {
     if (historyAbort === abort)
-      $('history-status').textContent = 'History unavailable. Retrying when the controller is reachable.';
+      RoomHistory.unavailable();
   } finally {
     clearTimeout(timeout);
     historyAbort = null;
@@ -444,4 +388,3 @@ document.addEventListener('visibilitychange', () => {
   }
   else { request(); requestHistory(); }
 });
-window.addEventListener('resize', drawHistory);

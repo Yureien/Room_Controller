@@ -7,7 +7,9 @@ import hashlib
 def embed_web(source: Path, output: Path) -> None:
     page = (source / "index.html").read_text(encoding="utf-8")
     for marker, filename, tag in [
+        ("<!-- THEME_JS -->", "theme.js", "script"),
         ("<!-- CONTROLLER_CSS -->", "style.css", "style"),
+        ("<!-- HISTORY_JS -->", "history_chart.js", "script"),
         ("<!-- CONTROLLER_JS -->", "controller.js", "script"),
     ]:
         if page.count(marker) != 1:
