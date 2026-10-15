@@ -165,7 +165,10 @@ more frequently during queued lamp operations. Hidden tabs stop polling and
 refresh when reopened. It preserves unfinished color, slider, and effect edits.
 Connection and command errors are displayed; failed commands are not
 automatically resent. BLE work runs on a separate worker task, so discovery
-and connection attempts do not block the AC command loop.
+and connection attempts do not block the AC command loop. HTTP transfers also
+run asynchronously using the pinned ESP32Async server and AsyncTCP libraries.
+State polling leaves command buttons available, and session/revision tags prevent
+out-of-order responses from rolling back newer settings.
 
 Displays reflect this controller's last requested settings. AC remote changes
 and changes from another lighting app/remote are not synchronized. The lamp's
@@ -198,19 +201,46 @@ between pages and pausing backfill while controls are sending. Once caught up,
 it requests only new samples every five seconds, instead of downloading the
 whole day repeatedly. Session IDs and monotonic cursors handle restarts and ring
 wraps; missing readings retain their gaps. The server streams each bounded page
-with Content-Length and one body write, keeping a full day's JSON out of the heap.
-The HTTP server currently handles requests synchronously; pagination bounds the
-history work but slow clients can still delay other requests.
+with Content-Length, keeping a full day's JSON out of the heap. Slow clients
+transfer in the background while the main loop keeps servicing controls.
+
+## Async HTTP ownership
+
+Network callbacks validate request parameters and submit copied inputs through
+`src/web_dispatch.h`. Only the main loop executes AC/lamp commands, takes state
+and history snapshots, writes settings, and updates power/activity state. No
+controller objects, mutable history references, or HTTP request pointers cross
+the task boundary. The existing BLE worker still communicates through its own
+queues and atomics. AsyncTCP is pinned to core 0 so its callbacks do not preempt
+the main loop's software IR carrier on core 1.
+
+The handoff has six fixed slots with replies bounded to 3 KiB each (18 KiB of
+reply storage): two slots reserved for commands and four for state/history.
+Commands are FIFO and take priority over reads; one job is serviced per main-loop
+iteration. Full queues return HTTP 503. Work still queued after two seconds is
+rejected rather than executed late. Wi-Fi loss rejects pending work. Disconnects
+cancel unclaimed work; a command already claimed may have taken effect, so check
+the actual device before retrying. Neither firmware nor browser resends commands
+automatically.
+
+`src/web_response.h` waits for the reply using the network task's existing TCP
+poll callbacks, then gives the library an independent copy for the transfer. All
+request/response operations and disconnect cleanup stay on the network task;
+slot generations prevent a late completion from affecting a reused slot. Reply
+startup can wait for the next TCP poll (normally up to roughly 500 ms), and full
+history loads progressively across many pages. This bounds history work and
+isolates slow network transfers; it does not make IR transmissions instantaneous.
 
 ## Power saving
 
 CPU/light-sleep/Wi-Fi power savings are **disabled by default** for AC-powered
 operation. The CPU stays at 240 MHz, automatic light sleep is disabled, Wi-Fi
 uses `WIFI_PS_NONE`, and serial commands do not require a wake-up Enter.
-To opt in, add this to the `nodemcu-32s` environment in `platformio.ini`:
+To opt in, append the power-saving define to the existing `build_flags` in the
+`nodemcu-32s` environment in `platformio.ini`:
 
 ```ini
-build_flags = -DROOM_CONTROLLER_POWER_SAVING=1
+build_flags = -DCONFIG_ASYNC_TCP_RUNNING_CORE=0 -DROOM_CONTROLLER_POWER_SAVING=1
 ```
 
 `src/power_config.h` defaults the flag to `0` and accepts only `0` or `1`.
@@ -402,6 +432,12 @@ same cursor for new samples. An expired/future cursor or different session retur
 cache. Malformed limits/cursors or a cursor without a session return HTTP 400.
 Requests without pagination parameters now return the first bounded page.
 
+State and command snapshots include `session` (boot ID) and increasing `revision`
+for ordering concurrent replies. Execution replies retain AC HTTP 200/400 and
+lamp HTTP 202/400 semantics. Validation, full-queue, timeout, and disconnect errors
+may contain only `ok:false` and `message`; HTTP 503 never implies a command
+succeeded and must not trigger an automatic resend.
+
 A lamp response of 202 means accepted for asynchronous processing. The nested
 `lamp` object in `/api/state` includes `busy`, `completed`, `ok`, and the eventual
 message. Serial and web share validated command handlers. Wi-Fi credentials
@@ -419,8 +455,18 @@ g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_api_test.cpp
 g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/auto_cool_test.cpp -o /tmp/room-auto-cool-test
 /tmp/room-auto-cool-test
 python3 test/test_auto_cool_integration.py
+g++ -std=c++11 -Wall -Wextra -Werror -pthread -Isrc test/web_dispatch_test.cpp -o /tmp/room-web-dispatch-test
+/tmp/room-web-dispatch-test
+python3 test/test_web_async.py
 node test/test_web_ui.js
 ```
+
+The async host checks use a fake HTTP transport and verify routing, task
+ownership, command priority, overload/expiry, disconnected requests, immutable
+history snapshots, and concurrent slot reuse. They do not measure on-device
+latency, heap/stack headroom, Wi-Fi/BLE coexistence, or actual IR reception.
+Hardware validation should include a full history buffer, simultaneous controls
+and slow history transfers, multiple tabs, and Wi-Fi loss/reconnection.
 
 The optional reference check compares C++ packets against the upstream Python
 methods without installing or using Python Bluetooth dependencies.

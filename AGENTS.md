@@ -24,6 +24,9 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
 - `src/auto_cool.h`: portable decision logic; main.cpp applies its actions.
 - `src/temperature_history.h`: fixed 24-hour RAM ring, 17,280 int16 hundredths
   at five-second intervals (33.8 KiB). Missing readings preserve gaps; no flash history.
+- `src/web_dispatch.h` / `web_response.h`: bounded async HTTP handoff. Keep
+  controller/history snapshots and commands in the main loop; request/response
+  operations stay on AsyncTCP (core 0). See [ownership](README.md#async-http-ownership).
 - `src/web_ui.h`: HTML/CSS/JS in PROGMEM; no browser build or external assets.
   Five-second polling stops in hidden tabs and preserves unfinished lamp edits.
 - `src/lotus_lamp.*`: bounded queues and BLE worker; keep slow BLE work off the
@@ -61,13 +64,16 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
 ## Verification
 
 Build code/dependency changes with `pio run` (or `~/.platformio/penv/bin/pio`).
-For power-related changes, also build with
-`PLATFORMIO_BUILD_FLAGS=-DROOM_CONTROLLER_POWER_SAVING=1 pio run`, then rebuild
-normally so the final artifact uses the default disabled setting.
+For power-related changes, also build with both
+`-DCONFIG_ASYNC_TCP_RUNNING_CORE=0 -DROOM_CONTROLLER_POWER_SAVING=1` in
+`PLATFORMIO_BUILD_FLAGS`, then rebuild normally so the final artifact uses the
+default disabled setting.
 
-Run relevant checks listed in README: native history/Auto-Cool tests,
-`python3 test/test_auto_cool_integration.py`, `node test/test_web_ui.js`, and
-`python3 test/test_lotus_protocol.py`. Finish with `git diff --check`.
+Run relevant checks listed in README: native history/API/Auto-Cool and threaded
+web-dispatch tests,
+`python3 test/test_auto_cool_integration.py`, `python3 test/test_web_async.py`,
+`node test/test_web_ui.js`, and `python3 test/test_lotus_protocol.py`.
+Finish with `git diff --check`.
 Integration tests use fake IR/NVS; build RAM totals do not establish runtime
 heap/stack safety or real IR reception. Stale CMake metadata after dependency
 changes may require removing only generated `.pio/build/nodemcu-32s` and rebuilding.

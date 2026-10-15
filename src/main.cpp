@@ -5,7 +5,9 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
-#include <WebServer.h>
+#include <ESPAsyncWebServer.h>
+#include <atomic>
+#include <new>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <IRremoteESP8266.h>
@@ -23,6 +25,8 @@
 #include "lotus_lamp.h"
 #include "temperature_history.h"
 #include "temperature_history_api.h"
+#include "web_dispatch.h"
+#include "web_response.h"
 #include "auto_cool.h"
 #include "power_config.h"
 #include "activity_led.h"
@@ -65,7 +69,10 @@ static_assert(sizeof(SavedAutoCool) == 8, "Unexpected Auto-Cool settings size");
 
 IRBluestarAc ac(kIrLed);
 LotusLampController lamp;
-WebServer server(80);
+AsyncWebServer server(80);
+WebDispatch webDispatch;
+std::atomic<bool> webActivity{false};
+uint64_t webStateRevision = 0;  // Main-loop snapshots; orders concurrent replies.
 Preferences storage;
 NetworkSettings settings{};
 bool storageReady = false;
@@ -492,7 +499,8 @@ void loadAutoCoolSettings() {
 }
 
 void stopNetworkServices() {
-  server.stop();
+  webDispatch.setOnline(false);
+  server.end();
   MDNS.end();
   networkUp = false;
 }
@@ -855,6 +863,11 @@ String stateJson(const String &message = "", const bool ok = true) {
   result.reserve(1100);
   result = "{\"ok\":";
   result += ok ? "true" : "false";
+  char revision[24];
+  snprintf(revision, sizeof(revision), "%llu", static_cast<unsigned long long>(++webStateRevision));
+  result += ",\"revision\":";
+  result += revision;
+  result += ",\"session\":" + jsonString(String(temperatureHistorySession));
   result += ",\"message\":" + jsonString(message);
   result += ",\"hostname\":" + jsonString(String(settings.hostname));
   result += ",\"ip\":" + jsonString(WiFi.localIP().toString());
@@ -886,89 +899,128 @@ String stateJson(const String &message = "", const bool ok = true) {
   return result;
 }
 
-void sendTemperatureHistory() {
-  boostCpu();
-  server.sendHeader("Cache-Control", "no-store");
-  uint64_t limit = TemperatureHistoryApi::kPageSize, cursor = 0;
-  const bool hasCursor = server.hasArg("cursor");
-  if ((server.hasArg("limit") &&
-       (!TemperatureHistoryApi::parseUnsigned(server.arg("limit").c_str(),
-           TemperatureHistoryApi::kPageSize, limit) || !limit)) ||
-      (hasCursor && (!server.hasArg("session") ||
-       !TemperatureHistoryApi::parseUnsigned(server.arg("cursor").c_str(),
-           TemperatureHistoryApi::kMaxCursor, cursor)))) {
-    server.send(400, "application/json", "{\"error\":\"Use limit 1..128 and cursor with session.\"}");
+// Main loop only: command execution and snapshots retain a single owner.
+void serviceWebRequests() {
+  if (webActivity.exchange(false)) boostCpu();
+  WebDispatch::Work work;
+  if (!webDispatch.claim(millis(), work)) return;
+  const auto& input = work.input;
+  String body, message;
+  int code = 200;
+  if (input.kind == WebDispatch::Kind::History) {
+    static char page[TemperatureHistoryApi::kResponseSize];
+    const size_t length = TemperatureHistoryApi::formatPage(temperatureHistory,
+        esp_timer_get_time() / 1000000, temperatureHistorySession, input.cursor,
+        input.reset, input.limit, page);
+    webDispatch.complete(work.token, 200, page, length);
     return;
   }
-  const bool reset = !hasCursor || server.arg("session") != temperatureHistorySession;
-  // A fixed page fits in one small body write. Content-Length avoids the three
-  // socket writes per HTTP chunk used by the old full-day streaming response.
-  static char page[TemperatureHistoryApi::kResponseSize];
-  const size_t length = TemperatureHistoryApi::formatPage(temperatureHistory,
-      esp_timer_get_time() / 1000000, temperatureHistorySession, cursor, reset,
-      static_cast<uint16_t>(limit), page);
-  server.setContentLength(length);
-  server.send(200, "application/json", "");
-  server.sendContent(page, length);
+  if (input.kind == WebDispatch::Kind::AcCommand) {
+    const bool ok = executeAcCommand(String(input.command), &message);
+    code = ok ? 200 : 400;
+    body = stateJson(message, ok);
+    if (ok) {
+      Serial.print(F("Web: "));
+      Serial.println(input.command);
+      printState();
+    }
+  } else if (input.kind == WebDispatch::Kind::LampCommand) {
+    const bool ok = lamp.command(String(input.command), false, message);
+    if (!message.length()) message = "Invalid lamp command.";
+    code = ok ? 202 : 400;
+    body = stateJson(message, ok);
+  } else {
+    body = stateJson();
+  }
+  webDispatch.complete(work.token, code, body.c_str(), body.length());
+}
+
+// AsyncTCP task only: inspect request-owned data and hand off bounded copies.
+void sendWebError(AsyncWebServerRequest* request, int code, const char* message) {
+  String body = "{\"ok\":false,\"message\":";
+  body += jsonString(String(message)) + "}";
+  auto* response = request->beginResponse(code, "application/json", body);
+  if (!response) { request->abort(); return; }
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
+}
+
+void enqueueWebRequest(AsyncWebServerRequest* request, const WebDispatch::Input& input) {
+  webActivity.store(true);
+  const auto token = webDispatch.submit(input, millis());
+  if (!token) {
+    sendWebError(request, 503, "Controller busy or disconnected. Check state before retrying.");
+    return;
+  }
+  auto* response = new (std::nothrow) ControllerWebResponse(webDispatch, token);
+  if (!response) {
+    webDispatch.cancel(token);
+    sendWebError(request, 503, "Controller busy. Check state before retrying.");
+    return;
+  }
+  request->send(response);
+}
+
+void enqueueWebCommand(AsyncWebServerRequest* request, WebDispatch::Kind kind) {
+  const String& origin = request->header("Origin");
+  if (origin.length() && origin != "http://" + request->host()) {
+    sendWebError(request, 403, "Use the controller page.");
+    return;
+  }
+  const auto* parameter = request->getParam("command", true);
+  const size_t maximum = kind == WebDispatch::Kind::AcCommand ? 127 : 100;
+  if (!parameter || !parameter->value().length() || parameter->value().length() > maximum ||
+      parameter->value().length() != strlen(parameter->value().c_str())) {
+    sendWebError(request, 400, "Invalid command.");
+    return;
+  }
+  WebDispatch::Input input;
+  input.kind = kind;
+  memcpy(input.command, parameter->value().c_str(), parameter->value().length() + 1);
+  enqueueWebRequest(request, input);
 }
 
 void configureWebServer() {
   snprintf(temperatureHistorySession, sizeof(temperatureHistorySession), "%08lx",
            static_cast<unsigned long>(esp_random()));
-  const char *headers[] = {"Origin"};
-  server.collectHeaders(headers, 1);
-  server.on("/", HTTP_GET, []() {
-    boostCpu();
-    server.sendHeader("Cache-Control", "no-store");
-    server.send_P(200, "text/html; charset=utf-8", kControlPage);
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    webActivity.store(true);
+    // Immutable PROGMEM page; the library streams it without a heap-sized copy.
+    auto* response = request->beginResponse(200, "text/html; charset=utf-8",
+        reinterpret_cast<const uint8_t*>(kControlPage), sizeof(kControlPage) - 1);
+    if (!response) { request->abort(); return; }
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
   });
-  server.on("/api/state", HTTP_GET, []() {
-    boostCpu();
-    server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "application/json", stateJson());
+  server.on("/api/state", HTTP_GET, [](AsyncWebServerRequest* request) {
+    enqueueWebRequest(request, WebDispatch::Input{});
   });
-  server.on("/api/temperature/history", HTTP_GET, sendTemperatureHistory);
-  server.on("/api/command", HTTP_POST, []() {
-    boostCpu();
-    server.sendHeader("Cache-Control", "no-store");
-    const String origin = server.header("Origin");
-    if (origin.length() && origin != "http://" + server.hostHeader()) {
-      server.send(403, "application/json",
-                  stateJson("Use the controller page.", false));
+  server.on("/api/temperature/history", HTTP_GET, [](AsyncWebServerRequest* request) {
+    WebDispatch::Input input;
+    input.kind = WebDispatch::Kind::History;
+    uint64_t limit = TemperatureHistoryApi::kPageSize;
+    const auto* limitArg = request->getParam("limit");
+    const auto* cursorArg = request->getParam("cursor");
+    const auto* sessionArg = request->getParam("session");
+    if ((limitArg && (!TemperatureHistoryApi::parseUnsigned(limitArg->value().c_str(),
+            TemperatureHistoryApi::kPageSize, limit) || !limit)) ||
+        (cursorArg && (!sessionArg || !TemperatureHistoryApi::parseUnsigned(
+            cursorArg->value().c_str(), TemperatureHistoryApi::kMaxCursor, input.cursor)))) {
+      sendWebError(request, 400, "Use limit 1..128 and cursor with session.");
       return;
     }
-    const String command = server.arg("command");
-    if (command.length() == 0 || command.length() > 127) {
-      server.send(400, "application/json",
-                  stateJson("Invalid command.", false));
-      return;
-    }
-    String message;
-    const bool ok = executeAcCommand(command, &message);
-    server.send(ok ? 200 : 400, "application/json", stateJson(message, ok));
-    if (ok) {
-      Serial.print(F("Web: "));
-      Serial.println(command);
-      printState();
-    }
+    input.limit = static_cast<uint16_t>(limit);
+    input.reset = !cursorArg || sessionArg->value() != temperatureHistorySession;
+    enqueueWebRequest(request, input);
   });
-  server.on("/api/lamp/command", HTTP_POST, []() {
-    boostCpu();
-    server.sendHeader("Cache-Control", "no-store");
-    const String origin = server.header("Origin");
-    if (origin.length() && origin != "http://" + server.hostHeader()) {
-      server.send(403, "application/json", stateJson("Use the controller page.", false));
-      return;
-    }
-    const String command = server.arg("command");
-    String message;
-    const bool ok = command.length() > 0 && command.length() <= 100 &&
-        lamp.command(command, false, message);
-    if (!message.length()) message = "Invalid lamp command.";
-    server.send(ok ? 202 : 400, "application/json", stateJson(message, ok));
+  server.on("/api/command", HTTP_POST, [](AsyncWebServerRequest* request) {
+    enqueueWebCommand(request, WebDispatch::Kind::AcCommand);
   });
-  server.on("/favicon.ico", HTTP_GET, []() { server.send(204); });
-  server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
+  server.on("/api/lamp/command", HTTP_POST, [](AsyncWebServerRequest* request) {
+    enqueueWebCommand(request, WebDispatch::Kind::LampCommand);
+  });
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest* request) { request->send(204); });
+  server.onNotFound([](AsyncWebServerRequest* request) { request->send(404, "text/plain", "Not found"); });
 }
 
 void serviceNetwork() {
@@ -978,11 +1030,11 @@ void serviceNetwork() {
     if (!networkUp) {
       networkUp = true;
       server.begin();
+      webDispatch.setOnline(true);
       if (MDNS.begin(settings.hostname)) MDNS.addService("http", "tcp", 80);
       else Serial.println(F("mDNS unavailable; use the printed IP address."));
       printNetworkStatus();
     }
-    server.handleClient();
     return;
   }
   if (networkUp) {
@@ -1196,6 +1248,7 @@ void loop() {
                               measuredTemperature);
   }
   serviceNetwork();
+  serviceWebRequests();
   serviceCpuPower();
   serviceActivityLed();
   delay(20);

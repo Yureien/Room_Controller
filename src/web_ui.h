@@ -525,7 +525,7 @@ const char kControlPage[] PROGMEM = R"HTML(
 
     async function requestHistory() {
       if (historyLoading || document.hidden) return;
-      if (busy || lampSending) { scheduleHistory(250); return; }
+      if (busy || stateLoading || lampSending) { scheduleHistory(250); return; }
       clearTimeout(historyTimer);
       historyLoading = true;
       const abort = new AbortController();
@@ -577,6 +577,8 @@ const char kControlPage[] PROGMEM = R"HTML(
     }
     let state = null;
     let busy = false;
+    let stateLoading = false;
+    let stateGeneration = 0;
     let lampSending = false;
     let lampPollTimer;
     let lampLocalError = '';
@@ -630,6 +632,7 @@ const char kControlPage[] PROGMEM = R"HTML(
     async function requestLamp(command, field = null) {
       if (lampSending || !state || !state.lamp || state.lamp.busy) return;
       lampSending = true;
+      ++stateGeneration;
       lampLocalError = '';
       updateLampControls();
       const abort = new AbortController();
@@ -641,6 +644,12 @@ const char kControlPage[] PROGMEM = R"HTML(
           body:new URLSearchParams({command}).toString()
         });
         const next = await response.json();
+        if (!response.ok && next.ok === false && typeof next.message === 'string') {
+          lampLocalError = next.message;
+          $('lamp-feedback').textContent = lampLocalError;
+          $('lamp-feedback').classList.add('error');
+          return;
+        }
         if (!next.lamp || typeof next.power !== 'boolean') throw new Error('Invalid controller response');
         if (!response.ok || !next.ok) lampLocalError = next.message || 'Lamp command rejected.';
         else if (field) lampPendingEdit = {field, completed:next.lamp.completed};
@@ -680,6 +689,10 @@ const char kControlPage[] PROGMEM = R"HTML(
     }
 
     function render(next) {
+      // Concurrent requests may arrive out of order. Session changes after a
+      // restart allow revisions to start again at one.
+      if (state && next.session === state.session && Number.isSafeInteger(next.revision) &&
+          Number.isSafeInteger(state.revision) && next.revision < state.revision) return;
       state = next;
       renderLamp();
       const mode = modes[state.mode] || 'Unknown';
@@ -738,8 +751,10 @@ const char kControlPage[] PROGMEM = R"HTML(
     }
 
     async function request(command) {
-      if (busy) return;
-      busy = true;
+      if (busy || (!command && (stateLoading || lampSending))) return;
+      if (command) busy = true;
+      else stateLoading = true;
+      const generation = ++stateGeneration;
       updateButtons();
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(), 5000);
@@ -753,6 +768,12 @@ const char kControlPage[] PROGMEM = R"HTML(
         }
         const response = await fetch(command ? '/api/command' : '/api/state', options);
         const next = await response.json();
+        if (!command && generation !== stateGeneration) return;
+        if (!response.ok && next.ok === false && typeof next.message === 'string') {
+          $('feedback').textContent = next.message;
+          $('feedback').classList.add('error');
+          return;
+        }
         if (typeof next.power !== 'boolean') throw new Error('Invalid controller response');
         const reconnecting = state === null;
         render(next);
@@ -764,6 +785,7 @@ const char kControlPage[] PROGMEM = R"HTML(
           $('feedback').classList.remove('error');
         }
       } catch (error) {
+        if (!command && generation !== stateGeneration) return;
         $('measured-temperature').textContent = '--';
         $('sensor-status').textContent = 'Controller offline';
         $('lamp-link').textContent = 'Controller offline';
@@ -777,7 +799,8 @@ const char kControlPage[] PROGMEM = R"HTML(
         state = null;
       } finally {
         clearTimeout(timeout);
-        busy = false;
+        if (command) busy = false;
+        else stateLoading = false;
         updateButtons();
       }
     }
