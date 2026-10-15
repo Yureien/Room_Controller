@@ -463,6 +463,16 @@ const char kControlPage[] PROGMEM = R"HTML(
     let historyReceived = 0;
     let historyLoading = false;
     let historyTimer;
+    let historyAbort = null;
+    let stateAbort = null;
+    let successfulReplies = 0;
+
+    // A command gets the browser's connection and radio budget immediately.
+    // Cancelling a read is safe; commands are never cancelled or replayed here.
+    function cancelBackgroundReads() {
+      if (historyAbort) { historyAbort.abort(); historyAbort = null; }
+      if (stateAbort) { stateAbort.abort(); stateAbort = null; }
+    }
 
     function drawHistory() {
       const canvas = $('temperature-chart');
@@ -529,6 +539,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       clearTimeout(historyTimer);
       historyLoading = true;
       const abort = new AbortController();
+      historyAbort = abort;
       const timeout = setTimeout(() => abort.abort(), 5000);
       let more = false;
       try {
@@ -567,9 +578,11 @@ const char kControlPage[] PROGMEM = R"HTML(
           (more ? ' Loading history…' : '');
         drawHistory();
       } catch (error) {
-        $('history-status').textContent = 'History unavailable. Retrying when the controller is reachable.';
+        if (historyAbort === abort)
+          $('history-status').textContent = 'History unavailable. Retrying when the controller is reachable.';
       } finally {
         clearTimeout(timeout);
+        historyAbort = null;
         historyLoading = false;
         // One request at a time, with room for commands between backfill pages.
         scheduleHistory(more ? 100 : 5000);
@@ -598,7 +611,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       const lamp = state.lamp;
       if (!lamp) return;
       if (lampPendingEdit && lamp.completed > lampPendingEdit.completed) {
-        lampEdited.delete(lampPendingEdit.field);
+        if (lamp.ok) lampEdited.delete(lampPendingEdit.field);
         lampPendingEdit = null;
       }
       $('lamp-link').textContent = lamp.busy ? 'Working…' :
@@ -633,6 +646,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       if (lampSending || !state || !state.lamp || state.lamp.busy) return;
       lampSending = true;
       ++stateGeneration;
+      cancelBackgroundReads();
       lampLocalError = '';
       updateLampControls();
       const abort = new AbortController();
@@ -689,10 +703,15 @@ const char kControlPage[] PROGMEM = R"HTML(
     }
 
     function render(next) {
+      ++successfulReplies;
       // Concurrent requests may arrive out of order. Session changes after a
       // restart allow revisions to start again at one.
       if (state && next.session === state.session && Number.isSafeInteger(next.revision) &&
           Number.isSafeInteger(state.revision) && next.revision < state.revision) return;
+      if (state && next.session !== state.session) {
+        lampPendingEdit = null;
+        lampLocalError = '';
+      }
       state = next;
       renderLamp();
       const mode = modes[state.mode] || 'Unknown';
@@ -752,11 +771,16 @@ const char kControlPage[] PROGMEM = R"HTML(
 
     async function request(command) {
       if (busy || (!command && (stateLoading || lampSending))) return;
-      if (command) busy = true;
+      if (command) {
+        busy = true;
+        cancelBackgroundReads();
+      }
       else stateLoading = true;
       const generation = ++stateGeneration;
+      const repliesAtStart = successfulReplies;
       updateButtons();
       const abort = new AbortController();
+      if (!command) stateAbort = abort;
       const timeout = setTimeout(() => abort.abort(), 5000);
       try {
         const options = {cache:'no-store', signal:abort.signal};
@@ -785,7 +809,16 @@ const char kControlPage[] PROGMEM = R"HTML(
           $('feedback').classList.remove('error');
         }
       } catch (error) {
-        if (!command && generation !== stateGeneration) return;
+        if (!command && (generation !== stateGeneration || stateAbort !== abort || document.hidden)) return;
+        // Another request can succeed while this one times out. Preserve that
+        // newer evidence of reachability and report this command's uncertainty.
+        if (successfulReplies !== repliesAtStart) {
+          if (command) {
+            $('feedback').textContent = 'Command response lost. Check the AC before retrying.';
+            $('feedback').classList.add('error');
+          }
+          return;
+        }
         $('measured-temperature').textContent = '--';
         $('sensor-status').textContent = 'Controller offline';
         $('lamp-link').textContent = 'Controller offline';
@@ -800,7 +833,7 @@ const char kControlPage[] PROGMEM = R"HTML(
       } finally {
         clearTimeout(timeout);
         if (command) busy = false;
-        else stateLoading = false;
+        else { stateLoading = false; stateAbort = null; }
         updateButtons();
       }
     }
@@ -836,6 +869,7 @@ const char kControlPage[] PROGMEM = R"HTML(
 
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
+        cancelBackgroundReads();
         clearTimeout(lampPollTimer);
         clearTimeout(historyTimer);
       }

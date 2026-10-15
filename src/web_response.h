@@ -17,7 +17,13 @@ class ControllerWebResponse : public AsyncWebServerResponse {
   bool _started() const override { return response_ && response_->_started(); }
   bool _finished() const override { return response_ && response_->_finished(); }
   bool _failed() const override { return response_ && response_->_failed(); }
-  void _respond(AsyncWebServerRequest* request) override { start(request); }
+  void _respond(AsyncWebServerRequest* request) override {
+    // The server disables its request timeout before calling _respond(). Keep
+    // a finite lifetime while waiting for loop() or a client's TCP window. A
+    // lost client must not retain one of the bounded dispatch slots forever.
+    request->client()->setRxTimeout(10);
+    start(request);
+  }
   size_t _ack(AsyncWebServerRequest* request, size_t length, uint32_t time) override {
     if (!response_) { start(request); return 0; }
     return response_->_ack(request, length, time);
@@ -33,7 +39,9 @@ class ControllerWebResponse : public AsyncWebServerResponse {
       response_.reset(request->beginResponse(code, "application/json", body));
     });
     if (!ready) return;  // AsyncTCP polls again; no blocking or busy wait.
-    if (!response_) { request->abort(); return; }
+    // request->abort() stops working after the server marks this deferred
+    // response as sent. Close the underlying connection on later failures.
+    if (!response_) { request->client()->close(true); return; }
     response_->addHeader("Cache-Control", "no-store");
     response_->_respond(request);
   }

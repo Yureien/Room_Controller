@@ -191,6 +191,47 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length, beforeRejected + 1, 'Never automatically resend commands');
   await run("requestLamp('color red')");
   assert.match(element('lamp-feedback').textContent, /^Controller busy/);
+
+  // A user command cancels only background reads before issuing its POST.
+  // Their intentional cancellation must not turn the page's status offline.
+  const readSignals = [];
+  sandbox.fetch = async (url, options) => {
+    calls.push(url);
+    if (url === '/api/command') {
+      assert(readSignals.every(signal => signal.aborted));
+      return reply({...state, session:'deadbeef', revision:4, power:true});
+    }
+    readSignals.push(options.signal);
+    return new Promise((resolve, reject) => options.signal.addEventListener('abort',
+      () => reject(new Error('Cancelled background request')), {once:true}));
+  };
+  element('history-status').textContent = 'Existing history';
+  const pendingHistory = run('requestHistory()');
+  const pendingState = run('request()');
+  await settle();
+  assert.equal(readSignals.length, 2);
+  await run("request('on')");
+  await Promise.all([pendingHistory, pendingState]);
+  assert.equal(run('state.power'), true);
+  assert.equal(element('history-status').textContent, 'Existing history');
+  assert.equal(element('connection-text').textContent, 'Connected');
+  assert.equal(run('historyLoading || stateLoading'), false);
+
+  // A late failed AC response must not erase a newer successful lamp reply.
+  let rejectCommand;
+  sandbox.fetch = async url => {
+    calls.push(url);
+    if (url === '/api/command') return new Promise((resolve, reject) => { rejectCommand = reject; });
+    return reply({...state, session:'deadbeef', revision:5, power:true});
+  };
+  const failedCommand = run("request('off')");
+  await settle();
+  await run("requestLamp('color red')");
+  rejectCommand(new Error('Lost command response'));
+  await failedCommand;
+  assert.equal(run('state.power'), true);
+  assert.equal(element('connection-text').textContent, 'Connected');
+  assert.match(element('feedback').textContent, /^Command response lost/);
   sandbox.fetch = originalFetch;
   console.log('Web UI checks passed: history, polling, connection controls, and Auto-Cool recovery controls.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -64,6 +64,14 @@ wake input is discarded. Serial input then keeps the controller awake for
 60 seconds. A `[boot] reset=...` line identifies resets. Repeated boot lines
 indicate board resets; Wi-Fi retries do not restart the firmware.
 
+If serial reports `Brownout detector was triggered` followed by
+`[boot] reset=brownout`, the supply fell below the ESP32's safe voltage. A reset
+drops every outstanding HTTP request. Check the USB cable, supply, board
+regulator, and IR transmitter wiring under load; compare with a known-good
+power source. Concurrent radio/IR activity can expose a marginal supply.
+Keep brownout protection enabled. See
+[Espressif's brownout explanation](https://docs.espressif.com/projects/esp-idf/en/v4.4.5/esp32/api-guides/fatal-errors.html#brownout).
+
 ## Wi-Fi and address setup
 
 On first boot, serial prompts for SSID and password. Enter each on its own
@@ -75,6 +83,9 @@ commands.
 The credentials and hostname are saved in ESP32 NVS. Later boots reconnect
 automatically. If Wi-Fi fails, serial remains usable and connection retries
 every 30 seconds.
+The HTTP listener remains bound through temporary link loss; unsuccessful
+listener startup retries every five seconds instead of leaving the site offline.
+Repeating the current hostname does not reconnect or rewrite flash.
 
 Open **http://esp32.local/** from a device on the same network. Serial also
 prints an IP-address URL for clients that cannot resolve `.local`. The page
@@ -169,6 +180,10 @@ and connection attempts do not block the AC command loop. HTTP transfers also
 run asynchronously using the pinned ESP32Async server and AsyncTCP libraries.
 State polling leaves command buttons available, and session/revision tags prevent
 out-of-order responses from rolling back newer settings.
+Starting a command cancels background state/history reads; polling resumes
+afterward. Hidden tabs also cancel background reads. A cancelled read does not
+mark the controller offline, and an old failed request cannot erase newer
+evidence that the controller is reachable.
 
 Displays reflect this controller's last requested settings. AC remote changes
 and changes from another lighting app/remote are not synchronized. The lamp's
@@ -230,6 +245,8 @@ slot generations prevent a late completion from affecting a reused slot. Reply
 startup can wait for the next TCP poll (normally up to roughly 500 ms), and full
 history loads progressively across many pages. This bounds history work and
 isolates slow network transfers; it does not make IR transmissions instantaneous.
+Deferred API responses restore a ten-second TCP inactivity timeout so lost or
+non-reading peers eventually release their requests and dispatch slots.
 
 ## Power saving
 
@@ -394,6 +411,15 @@ connect if needed; sessions end after 30 seconds idle. Bluetooth writes are asyn
 reported on serial and the page. A write without response indicates that the
 BLE stack accepted the packet; it does not acknowledge the physical setting.
 
+Changing the selected device or connection UUIDs stops the previous BLE host
+session before reconnecting. Scan startup failures and timeouts are reported;
+failed host shutdown retains its objects for a safe retry. A partial controller
+teardown failure requires a board restart; stale BLE objects are never reused.
+Connect/Reconnect reuses an already matching live connection. NimBLE's internal
+host initialization, host stop, and synchronous GATT waits can still stall the lamp worker
+if the underlying stack fails; the worker is not forcibly deleted while its
+callbacks may still be active.
+
 ## State after restart or power loss
 
 Wi-Fi, AC, and lamp records are independent. Each accepted AC setting change,
@@ -407,6 +433,9 @@ or replaying lamp colors, effects, or power commands. Bluetooth starts only when
 requested. Use a control button or `send` to transmit AC
 settings. Missing or incompatible saved data falls back to defaults/setup.
 Measured temperature is read afresh after startup; temperature history starts empty.
+Serial executes at most one complete command per loop to prevent input bursts
+from starving sensing and web requests. State snapshots mark readings older
+than seven seconds unavailable, matching the automation's freshness rule.
 
 The project/repository rename preserves existing flash records. `wifi forget`
 does not reset AC or lamp settings; `lamp forget` does not reset Wi-Fi or AC.

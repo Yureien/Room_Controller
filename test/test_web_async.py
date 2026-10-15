@@ -54,7 +54,8 @@ class AsyncWebServerRequest {
   String origin, hostname = "room.local", wireBody;
   int wireCode = 0;
   size_t window = 10000;
-  bool aborted = false;
+  bool aborted = false, sent = false, failAllocation = false;
+  uint32_t rxTimeoutSeconds = 0, receivedAt = 0;
   std::unique_ptr<AsyncWebServerResponse> response;
   const String& header(const char*) const { networkOnly(); return origin; }
   const String& host() const { networkOnly(); return hostname; }
@@ -66,6 +67,7 @@ class AsyncWebServerRequest {
   }
   AsyncWebServerResponse* beginResponse(int code, const char*, const String& body) {
     networkOnly();
+    if (failAllocation) return nullptr;
     auto* result = new AsyncWebServerResponse;
     result->code = code; result->body = body;
     return result;
@@ -75,8 +77,17 @@ class AsyncWebServerRequest {
   }
   void send(AsyncWebServerResponse* next) { networkOnly(); response.reset(next); }
   void send(int code, const char* type = "", const char* body = "") { send(beginResponse(code, type, body)); }
-  void abort() { networkOnly(); aborted = true; }
-  void poll() { networkOnly(); response->_ack(this, 0, 0); }
+  // Match the installed library: abort() is ineffective after _send(), and
+  // zero-window clients do not run the response's poll callback.
+  AsyncWebServerRequest* client() { networkOnly(); return this; }
+  void setRxTimeout(uint32_t seconds) { networkOnly(); rxTimeoutSeconds = seconds; }
+  void close(bool = false) { networkOnly(); aborted = true; response.reset(); }
+  void abort() { networkOnly(); if (!sent) aborted = true; }
+  void poll() {
+    networkOnly();
+    if (rxTimeoutSeconds && millis() - receivedAt >= rxTimeoutSeconds * 1000) close();
+    else if (window) response->_ack(this, 0, 0);
+  }
 };
 inline void AsyncWebServerResponse::_respond(AsyncWebServerRequest* request) {
   networkOnly(); started = true; request->wireCode = code; _ack(request, 0, 0);
@@ -96,7 +107,8 @@ class AsyncWebServer {
   void on(const char* path, int, std::function<void(AsyncWebServerRequest*)> callback) { routes[path] = callback; }
   void onNotFound(std::function<void(AsyncWebServerRequest*)>) {}
   void dispatch(const char* path, AsyncWebServerRequest& request) {
-    networkOnly(); routes.at(path)(&request); request.response->_respond(&request);
+    networkOnly(); request.receivedAt = millis(); routes.at(path)(&request);
+    request.setRxTimeout(0); request.response->_respond(&request); request.sent = true;
   }
 };
 '''
@@ -259,6 +271,26 @@ int main() {
   onNetwork([&] { restart.poll(); delta.poll(); });
   assert(restart.wireBody.find("\"reset\":true") != String::npos);
   assert(delta.wireBody.find("\"samples\":[30.00]") != String::npos);
+
+  // Allocation can fail after _send() has marked the deferred response sent.
+  // request.abort() would leave that connection hanging without a response.
+  AsyncWebServerRequest allocationFailure;
+  onNetwork([&] { server.dispatch("/api/state", allocationFailure); });
+  serviceWebRequests(); allocationFailure.failAllocation = true;
+  onNetwork([&] { allocationFailure.poll(); });
+  assert(allocationFailure.aborted);
+
+  // A disconnected peer with a closed TCP window never enters _ack(). Bound
+  // its lifetime at the transport level so it releases the occupied slot.
+  AsyncWebServerRequest stalled;
+  onNetwork([&] { server.dispatch("/api/state", stalled); });
+  serviceWebRequests(); stalled.window = 0;
+  clockMs += 9999;
+  onNetwork([&] { stalled.poll(); });
+  assert(!stalled.aborted);
+  clockMs += 1;
+  onNetwork([&] { stalled.poll(); });
+  assert(stalled.aborted);
 }
 '''
 

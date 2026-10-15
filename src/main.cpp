@@ -79,6 +79,8 @@ bool storageReady = false;
 bool networkUp = false;
 bool connecting = false;
 uint32_t connectionStarted = 0;
+uint32_t listenerAttemptedAt = 0;
+bool listenerAttempted = false;
 uint32_t commandsSent = 0;
 #if ROOM_CONTROLLER_POWER_SAVING
 uint32_t lastUserActivity = 0;
@@ -115,6 +117,7 @@ bool haveSavedAutoCool = false;
 bool autoCoolSettingsSaved = true;
 bool saveAutoCoolSettings();
 bool saveAcState();
+bool temperatureAvailable();
 
 void acquireActivePower() {
 #if ROOM_CONTROLLER_POWER_SAVING
@@ -191,7 +194,7 @@ void serviceActivityLed() {
 
 const char *sensorStatusName() {
   switch (sensorStatus) {
-    case SensorStatus::Ready: return "ready";
+    case SensorStatus::Ready: return temperatureAvailable() ? "ready" : "unavailable";
     case SensorStatus::Unavailable: return "unavailable";
     default: return "waiting";
   }
@@ -199,7 +202,7 @@ const char *sensorStatusName() {
 
 void printTemperature() {
   Serial.print(F("Measured temperature (GPIO 22): "));
-  if (sensorStatus == SensorStatus::Ready) {
+  if (temperatureAvailable()) {
     Serial.print(measuredTemperature, 2);
     Serial.println(F(" C"));
   } else if (sensorStatus == SensorStatus::Waiting) {
@@ -385,6 +388,10 @@ void loadSettings() {
 }
 
 bool saveSettings(const NetworkSettings &value) {
+  if (storageReady && value.version == settings.version &&
+      std::strcmp(value.ssid, settings.ssid) == 0 &&
+      std::strcmp(value.password, settings.password) == 0 &&
+      std::strcmp(value.hostname, settings.hostname) == 0) return true;
   // A single NVS entry keeps the SSID/password pair together across updates.
   if (!storageReady ||
       storage.putBytes("network", &value, sizeof(value)) != sizeof(value)) {
@@ -500,9 +507,11 @@ void loadAutoCoolSettings() {
 
 void stopNetworkServices() {
   webDispatch.setOnline(false);
-  server.end();
+  // Keep the listener bound across transient link loss. Closing/rebinding port
+  // 80 can fail while existing sockets are active or in TCP TIME_WAIT.
   MDNS.end();
   networkUp = false;
+  listenerAttempted = false;
 }
 
 void connectWifi() {
@@ -512,6 +521,9 @@ void connectWifi() {
   connecting = false;
   if (!settings.ssid[0]) return;
   WiFi.persistent(false);  // Credentials are managed in our NVS entry.
+  // Arduino reapplies this preference from its asynchronous STA_START event.
+  // Setting only the IDF driver below could be overwritten after begin().
+  WiFi.setSleep(ROOM_CONTROLLER_POWER_SAVING ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
   WiFi.setHostname(settings.hostname);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -882,7 +894,7 @@ String stateJson(const String &message = "", const bool ok = true) {
   result += ",\"cancelled\":" + String(autoCool.cancelled() ? "true" : "false");
   result += ",\"saved\":" + String(autoCoolSettingsSaved ? "true" : "false") + "}";
   result += ",\"measuredTemperature\":";
-  result += sensorStatus == SensorStatus::Ready ?
+  result += temperatureAvailable() ?
       String(measuredTemperature, 2) : String("null");
   result += ",\"sensorStatus\":" + jsonString(String(sensorStatusName()));
   result += ",\"sensorIntervalSeconds\":" + String(kTemperatureInterval / 1000);
@@ -1029,12 +1041,19 @@ void serviceNetwork() {
     connecting = false;
     if (!networkUp) {
       networkUp = true;
-      server.begin();
-      webDispatch.setOnline(true);
       if (MDNS.begin(settings.hostname)) MDNS.addService("http", "tcp", 80);
       else Serial.println(F("mDNS unavailable; use the printed IP address."));
       printNetworkStatus();
     }
+    if (server.state() != LISTEN &&
+        (!listenerAttempted || millis() - listenerAttemptedAt >= 5000)) {
+      listenerAttemptedAt = millis();
+      listenerAttempted = true;
+      server.begin();
+      if (server.state() != LISTEN)
+        Serial.println(F("HTTP listener unavailable; retrying in 5 seconds."));
+    }
+    webDispatch.setOnline(server.state() == LISTEN);
     return;
   }
   if (networkUp) {
@@ -1101,6 +1120,10 @@ void processSerialCommand(String line) {
     if (!validHostname(value)) {
       Serial.println(F("Use 1..63 letters/digits/hyphens, without .local."));
       Serial.println(F("The first and last character cannot be a hyphen."));
+      return;
+    }
+    if (value == settings.hostname) {
+      printNetworkStatus();
       return;
     }
     NetworkSettings updated = settings;
@@ -1185,6 +1208,9 @@ void readSerial() {
       std::memset(line, 0, sizeof(line));
       length = 0;
       overflow = false;
+      // An input burst can contain many short IR commands. Limit execution,
+      // not just bytes, so sensors and HTTP get a turn between commands.
+      break;
     } else if (!overflow && (c == '\b' || c == 127)) {
       if (length) length--;
     } else if (!overflow && c >= ' ') {
