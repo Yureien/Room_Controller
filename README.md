@@ -512,3 +512,11 @@ result application remain on the main loop.
 Tests are deferred for this refactor. Existing source-extraction harnesses may
 need path/interface migration before reuse; their earlier results do not verify
 the refactored firmware.
+
+`TemperatureSensor` searches one OneWire address per service call (up to 32 per
+pass), retries missing hardware every five seconds, and retains parasite power
+through the 750-ms conversion. Freshness uses monotonic acquisition time and
+applies to serial, HTTP, history, and automation. `AcController` owns IR,
+Auto-Cool, fan memory, and the unchanged legacy AC/settings records. Separate
+record save outcomes feed the existing aggregate Auto-Cool warning; a successful
+settings save cannot erase a failed recovery power-state save.
