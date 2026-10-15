@@ -8,7 +8,16 @@ const page = fs.readFileSync(path.join(__dirname, '../src/web_ui.h'), 'utf8');
 const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements = new Map();
 const strokes = [], dots = [], intervals = [], events = {}, calls = [];
-let moves = [], history = {interval:5, age:0, samples:[20, null, 21]};
+let moves = [];
+function historyPage(samples, {start = 0, end = start + samples.length, first = 0,
+    reset = true, session = '1234abcd'} = {}) {
+  return {session, interval:5, age:(end - start - samples.length) * 5,
+    first, start, next:start + samples.length, end, total:end - first,
+    reset, more:start + samples.length < end, samples};
+}
+let history = historyPage([20, null, 21]);
+const timers = new Map();
+let timerId = 0;
 const ctx = {
   scale() {}, fillText() {}, beginPath() { moves = []; },
   moveTo(x, y) { moves.push(['move', x, y]); },
@@ -42,7 +51,8 @@ const document = {hidden:false, getElementById:element, querySelectorAll(selecto
   addEventListener(name, callback) { events[name] = callback; }};
 const sandbox = {document, window:{devicePixelRatio:1, addEventListener() {}},
   AbortController, URLSearchParams,
-  setTimeout() { return 1; }, clearTimeout() {},
+  setTimeout(callback, delay) { timers.set(++timerId, {callback, delay}); return timerId; },
+  clearTimeout(id) { timers.delete(id); },
   setInterval(callback, delay) { intervals.push({callback, delay}); },
   async fetch(url) {
     calls.push(url);
@@ -55,8 +65,10 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
   run(script);
   await settle();
-  assert.deepEqual(intervals.map(interval => interval.delay), [5000, 5000],
-    'State and history must both refresh every five seconds');
+  await run('requestHistory()');
+  assert.deepEqual(intervals.map(interval => interval.delay), [5000]);
+  assert([...timers.values()].some(timer => timer.delay === 5000),
+    'Incremental history refreshes five seconds after completion');
   assert.equal(element('lamp-connect').textContent, 'Connect');
   assert.equal(element('lamp-disconnect').disabled, true);
   assert.equal(element('lamp-link').textContent, 'Sleeping');
@@ -76,21 +88,54 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   document.hidden = false;
   events.visibilitychange();
   await settle();
+  await run('requestHistory()');
   assert.equal(calls.length, hiddenCalls + 2, 'Reopened tabs refresh state and history');
 
-  history = {interval:5, age:0, samples:Array(17280).fill(25)};
-  await run('requestHistory()');
+  // Full-day backfill stays bounded per response and accumulates in the browser.
+  for (let start = 0; start < 17280; start += 128) {
+    history = historyPage(Array(Math.min(128, 17280 - start)).fill(25),
+      {start, end:17280, reset:start === 0});
+    await run('requestHistory()');
+    if (start === 0) {
+      assert.match(element('history-status').textContent, /Loading history/);
+      assert([...timers.values()].some(timer => timer.delay === 100));
+    }
+  }
   assert.match(element('history-status').textContent, /^17280 readings/);
-  history = {interval:5, age:0, samples:[null, null]};
+  history = historyPage([26], {start:17280, end:17281, first:1, reset:false});
+  await run('requestHistory()');
+  assert.equal(run('historyData.samples.length'), 17280);
+  assert.equal(run('historyData.samples.at(-1)'), 26);
+  assert.equal(run('historyData.start'), 1);
+  assert.match(calls.at(-1), /session=1234abcd&cursor=17280/);
+  history = historyPage([], {start:17281, first:1, reset:false});
+  await run('requestHistory()');
+  assert.equal(run('historyData.samples.length'), 17280, 'Empty incremental page retains the graph');
+
+  history = historyPage([null, null], {session:'deadbeef'});
   await run('requestHistory()');
   assert.match(element('history-status').textContent, /^No readings yet/);
-  history = {interval:5, age:0, samples:[24.5]};
+  assert.equal(run('historyData.samples.length'), 2, 'Reboot discards the old session');
+  history = historyPage([24.5]);
   dots.length = 0;
   await run('requestHistory()');
   assert.equal(dots.length, 1, 'Show a single startup reading');
-  history = {interval:5, age:0, samples:Array(17281).fill(25)};
+  history = historyPage(Array(129).fill(25));
   await run('requestHistory()');
   assert.match(element('history-status').textContent, /^History unavailable/);
+  assert.equal(run('historyData.samples.length'), 1, 'Invalid pages do not destroy cached data');
+  history = historyPage([26], {start:2, reset:false});
+  await run('requestHistory()');
+  assert.match(element('history-status').textContent, /^History unavailable/);
+  history = historyPage([26], {start:10, first:10});
+  await run('requestHistory()');
+  assert.equal(run('historyData.start'), 10, 'Expired cursors restart at the oldest retained reading');
+  const beforeBusy = calls.length;
+  run('busy = true');
+  await run('requestHistory()');
+  run('busy = false');
+  assert.equal(calls.length, beforeBusy, 'History yields to control requests');
+  assert([...timers.values()].some(timer => timer.delay === 250));
   run('state.lamp.connected = true; renderLamp()');
   assert.equal(element('lamp-connect').textContent, 'Reconnect');
   assert.equal(element('lamp-disconnect').disabled, false);

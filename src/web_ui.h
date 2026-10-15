@@ -462,6 +462,7 @@ const char kControlPage[] PROGMEM = R"HTML(
     let historyData = null;
     let historyReceived = 0;
     let historyLoading = false;
+    let historyTimer;
 
     function drawHistory() {
       const canvas = $('temperature-chart');
@@ -517,29 +518,61 @@ const char kControlPage[] PROGMEM = R"HTML(
         Math.min(...valid).toFixed(2) + ' to ' + Math.max(...valid).toFixed(2) + ' degrees Celsius');
     }
 
+    function scheduleHistory(delay) {
+      clearTimeout(historyTimer);
+      if (!document.hidden) historyTimer = setTimeout(requestHistory, delay);
+    }
+
     async function requestHistory() {
       if (historyLoading || document.hidden) return;
+      if (busy || lampSending) { scheduleHistory(250); return; }
+      clearTimeout(historyTimer);
       historyLoading = true;
       const abort = new AbortController();
-      const timeout = setTimeout(() => abort.abort(), 10000);
+      const timeout = setTimeout(() => abort.abort(), 5000);
+      let more = false;
       try {
-        const response = await fetch('/api/temperature/history', {cache:'no-store',signal:abort.signal});
+        const query = new URLSearchParams({limit:128});
+        if (historyData) {
+          query.set('session', historyData.session);
+          query.set('cursor', historyData.next);
+        }
+        const response = await fetch('/api/temperature/history?' + query, {cache:'no-store',signal:abort.signal});
         const next = await response.json();
-        if (!response.ok || !Array.isArray(next.samples) || next.samples.length > 17280 ||
-            next.interval !== 5 || !Number.isFinite(next.age) ||
-            !next.samples.every(v => v === null || Number.isFinite(v))) throw new Error('Invalid history');
+        if (!response.ok || !Array.isArray(next.samples) || next.samples.length > 128 ||
+            !/^[0-9a-f]{8}$/.test(next.session) || next.interval !== 5 ||
+            !Number.isFinite(next.age) || next.age < 0 ||
+            !['first','start','next','end','total'].every(key => Number.isSafeInteger(next[key]) && next[key] >= 0) ||
+            next.total > 17280 || next.end - next.first !== next.total ||
+            next.start < next.first || next.next < next.start || next.next > next.end ||
+            next.next - next.start !== next.samples.length ||
+            typeof next.reset !== 'boolean' || next.more !== (next.next < next.end) ||
+            (next.more && !next.samples.length) ||
+            !next.samples.every(v => v === null || (Number.isFinite(v) && v >= -55 && v <= 125)))
+          throw new Error('Invalid history');
+        if (historyData && !next.reset) {
+          if (next.session !== historyData.session || next.start !== historyData.next)
+            throw new Error('Discontinuous history');
+          const start = Math.max(historyData.start, next.first);
+          next.samples = historyData.samples.concat(next.samples).slice(start - historyData.start);
+          next.start = start;
+        } else if (next.start !== next.first) throw new Error('Invalid history reset');
         historyData = next;
         historyReceived = Date.now();
+        more = next.more;
         const valid = next.samples.filter(Number.isFinite);
-        $('history-status').textContent = valid.length ? valid.length + ' readings · Min ' +
+        $('history-status').textContent = (valid.length ? valid.length + ' readings · Min ' +
           Math.min(...valid).toFixed(2) + '°C · Max ' + Math.max(...valid).toFixed(2) +
-          '°C · Gaps indicate missing readings.' : 'No readings yet. Check the sensor.';
+          '°C · Gaps indicate missing readings.' : 'No readings yet. Check the sensor.') +
+          (more ? ' Loading history…' : '');
         drawHistory();
       } catch (error) {
         $('history-status').textContent = 'History unavailable. Retrying when the controller is reachable.';
       } finally {
         clearTimeout(timeout);
         historyLoading = false;
+        // One request at a time, with room for commands between backfill pages.
+        scheduleHistory(more ? 100 : 5000);
       }
     }
     let state = null;
@@ -777,9 +810,12 @@ const char kControlPage[] PROGMEM = R"HTML(
     request();
     requestHistory();
     setInterval(() => { if (!document.hidden) request(); }, 5000);
-    setInterval(requestHistory, 5000);
+
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) clearTimeout(lampPollTimer);
+      if (document.hidden) {
+        clearTimeout(lampPollTimer);
+        clearTimeout(historyTimer);
+      }
       else { request(); requestHistory(); }
     });
     window.addEventListener('resize', drawHistory);

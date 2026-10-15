@@ -27,12 +27,16 @@ class TemperatureHistory {
     // Bound catch-up work even after a very long pause.
     if (steps >= kCapacity) { count_ = 0; next_ = 0; }
     const uint32_t retained = steps < kCapacity ? steps : kCapacity;
+    // Cursors count every interval, including gaps that have already expired.
+    end_ += steps - retained;
     for (uint32_t i = 1; i < retained; i++) append(kMissing);
     append(value);
     lastSample_ += steps * kIntervalSeconds;
   }
 
   uint16_t count() const { return count_; }
+  uint64_t end() const { return end_; }
+  uint64_t first() const { return end_ - count_; }
   uint32_t age(uint32_t now) const { return count_ ? now - lastSample_ : 0; }
   int16_t sample(uint16_t index) const {
     return samples_[(next_ + kCapacity - count_ + index) % kCapacity];
@@ -42,10 +46,12 @@ class TemperatureHistory {
   int16_t samples_[kCapacity]{};
   uint16_t next_ = 0, count_ = 0;
   uint32_t lastSample_ = 0;
+  uint64_t end_ = 0;
   void append(int16_t value) {
     samples_[next_] = value;
     next_ = (next_ + 1) % kCapacity;
     if (count_ < kCapacity) count_++;
+    end_++;
   }
 };
 static_assert(sizeof(TemperatureHistory) <= 34 * 1024, "History RAM budget exceeded");

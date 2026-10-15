@@ -183,7 +183,7 @@ reconnecting the sensor does not require a restart.
 
 Temperature history records one reading every 5 seconds in a fixed ring buffer of
 17,280 samples (roughly 24 hours). Each sample uses a signed 16-bit temperature
-in hundredths of a degree; the entire buffer and bookkeeping use 34,568 bytes
+in hundredths of a degree; the entire buffer and bookkeeping use 34,576 bytes
 (about 33.8 KiB). This is half the sample storage required by 32-bit floats.
 Missing readings and missed intervals appear as gaps. The oldest sample is
 overwritten when full. History stays in RAM and resets on restart; periodic
@@ -192,8 +192,15 @@ measurements never write to flash.
 The browser draws the graph with a small built-in canvas renderer, without
 external libraries, CDN assets, or internet access. It labels times using the
 browser's clock and the sample ages, so the ESP32 does not need NTP. History is
-fetched separately from settings and streamed in 256-byte chunks, keeping a
-full day's JSON out of the ESP32 heap.
+fetched separately from settings in pages of at most 128 samples (under 1.2 KiB
+per response). The browser loads the retained day progressively, leaving 100 ms
+between pages and pausing backfill while controls are sending. Once caught up,
+it requests only new samples every five seconds, instead of downloading the
+whole day repeatedly. Session IDs and monotonic cursors handle restarts and ring
+wraps; missing readings retain their gaps. The server streams each bounded page
+with Content-Length and one body write, keeping a full day's JSON out of the heap.
+The HTTP server currently handles requests synchronously; pagination bounds the
+history work but slow clients can still delay other requests.
 
 ## Power saving
 
@@ -380,9 +387,20 @@ does not reset AC or lamp settings; `lamp forget` does not reset Wi-Fi or AC.
 | --- | --- |
 | `GET /` | Room Controller page |
 | `GET /api/state` | AC, sensor, network address, Auto-Cool target/recovery status, and nested lamp status |
-| `GET /api/temperature/history` | Oldest-first samples in °C (or `null` for gaps), fixed `interval` in seconds, and newest sample `age` in seconds |
+| `GET /api/temperature/history` | Bounded oldest-first page; optional `limit=1..128`, and `cursor` with `session` for continuation (see below) |
 | `POST /api/command` | URL-encoded `command`, such as `temp 25`, through the AC handler |
 | `POST /api/lamp/command` | URL-encoded `command`, such as `color red`, queued for BLE |
+
+History responses contain `session` (boot ID), `interval` (5 seconds), `age`
+(seconds since the last sample in this page), `first`/`end` (retained cursor range,
+end exclusive), `start`/`next` (page range), `total` (retained slots), `reset`,
+`more`, and `samples` (°C or `null` for gaps). Start with
+`GET /api/temperature/history?limit=128`; continue with
+`?limit=128&session=<session>&cursor=<next>` until `more` is false, then poll that
+same cursor for new samples. An expired/future cursor or different session returns
+`reset:true` and starts at the oldest retained sample; discard the old browser
+cache. Malformed limits/cursors or a cursor without a session return HTTP 400.
+Requests without pagination parameters now return the first bounded page.
 
 A lamp response of 202 means accepted for asynchronous processing. The nested
 `lamp` object in `/api/state` includes `busy`, `completed`, `ok`, and the eventual
@@ -396,6 +414,8 @@ python3 test/test_lotus_protocol.py
 python3 test/test_lotus_protocol.py --reference /path/to/lotus-lamp-python
 g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_test.cpp -o /tmp/room-temperature-test
 /tmp/room-temperature-test
+g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_api_test.cpp -o /tmp/room-history-api-test
+/tmp/room-history-api-test
 g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/auto_cool_test.cpp -o /tmp/room-auto-cool-test
 /tmp/room-auto-cool-test
 python3 test/test_auto_cool_integration.py

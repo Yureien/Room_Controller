@@ -22,6 +22,7 @@
 #include "web_ui.h"
 #include "lotus_lamp.h"
 #include "temperature_history.h"
+#include "temperature_history_api.h"
 #include "auto_cool.h"
 #include "power_config.h"
 #include "activity_led.h"
@@ -100,6 +101,7 @@ uint32_t temperatureStarted = 0;
 float measuredTemperature = 0;
 uint32_t measuredTemperatureSeconds = 0;
 TemperatureHistory temperatureHistory;
+char temperatureHistorySession[9];
 AutoCool autoCool;
 SavedAutoCool lastSavedAutoCool{};
 bool haveSavedAutoCool = false;
@@ -887,31 +889,32 @@ String stateJson(const String &message = "", const bool ok = true) {
 void sendTemperatureHistory() {
   boostCpu();
   server.sendHeader("Cache-Control", "no-store");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "application/json", "");
-  char chunk[256];
-  size_t used = snprintf(chunk, sizeof(chunk),
-      "{\"interval\":%lu,\"age\":%lu,\"samples\":[",
-      static_cast<unsigned long>(TemperatureHistory::kIntervalSeconds),
-      static_cast<unsigned long>(temperatureHistory.age(esp_timer_get_time() / 1000000)));
-  for (uint16_t i = 0; i < temperatureHistory.count(); i++) {
-    // A sample needs at most 8 characters plus its comma. Flush bounded chunks.
-    if (used + 16 >= sizeof(chunk)) {
-      server.sendContent(chunk, used);
-      used = 0;
-    }
-    const int16_t value = temperatureHistory.sample(i);
-    if (value == TemperatureHistory::kMissing)
-      used += snprintf(chunk + used, sizeof(chunk) - used, "%snull", i ? "," : "");
-    else
-      used += snprintf(chunk + used, sizeof(chunk) - used, "%s%.2f", i ? "," : "", value / 100.0);
+  uint64_t limit = TemperatureHistoryApi::kPageSize, cursor = 0;
+  const bool hasCursor = server.hasArg("cursor");
+  if ((server.hasArg("limit") &&
+       (!TemperatureHistoryApi::parseUnsigned(server.arg("limit").c_str(),
+           TemperatureHistoryApi::kPageSize, limit) || !limit)) ||
+      (hasCursor && (!server.hasArg("session") ||
+       !TemperatureHistoryApi::parseUnsigned(server.arg("cursor").c_str(),
+           TemperatureHistoryApi::kMaxCursor, cursor)))) {
+    server.send(400, "application/json", "{\"error\":\"Use limit 1..128 and cursor with session.\"}");
+    return;
   }
-  server.sendContent(chunk, used);
-  server.sendContent("]}");
-  server.sendContent("");
+  const bool reset = !hasCursor || server.arg("session") != temperatureHistorySession;
+  // A fixed page fits in one small body write. Content-Length avoids the three
+  // socket writes per HTTP chunk used by the old full-day streaming response.
+  static char page[TemperatureHistoryApi::kResponseSize];
+  const size_t length = TemperatureHistoryApi::formatPage(temperatureHistory,
+      esp_timer_get_time() / 1000000, temperatureHistorySession, cursor, reset,
+      static_cast<uint16_t>(limit), page);
+  server.setContentLength(length);
+  server.send(200, "application/json", "");
+  server.sendContent(page, length);
 }
 
 void configureWebServer() {
+  snprintf(temperatureHistorySession, sizeof(temperatureHistorySession), "%08lx",
+           static_cast<unsigned long>(esp_random()));
   const char *headers[] = {"Origin"};
   server.collectHeaders(headers, 1);
   server.on("/", HTTP_GET, []() {
