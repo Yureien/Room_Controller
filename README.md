@@ -477,35 +477,22 @@ does not reset AC or lamp settings; `lamp forget` does not reset Wi-Fi or AC.
 
 ## Web API and protocol checks
 
+See the [HTTP API reference](docs/http-api.md) for curl examples, command syntax,
+state fields, lamp completion tracking, history pagination, and error/retry rules.
+
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /` | Room Controller page |
 | `GET /api/state` | AC, sensor, network address, Auto-Cool target/recovery status, and nested lamp status |
-| `GET /api/temperature/history` | Bounded oldest-first page; optional `limit=1..128`, and `cursor` with `session` for continuation (see below) |
+| `GET /api/temperature/history` | Bounded oldest-first page; optional `limit=1..128`, and `cursor` with `session` for continuation |
 | `POST /api/command` | URL-encoded `command`, such as `temp 25`, through the AC handler |
 | `POST /api/lamp/command` | URL-encoded `command`, such as `color red`, queued for BLE |
 
-History responses contain `session` (boot ID), `interval` (5 seconds), `age`
-(seconds since the last sample in this page), `first`/`end` (retained cursor range,
-end exclusive), `start`/`next` (page range), `total` (retained slots), `reset`,
-`more`, and `samples` (°C or `null` for gaps). Start with
-`GET /api/temperature/history?limit=128`; continue with
-`?limit=128&session=<session>&cursor=<next>` until `more` is false, then poll that
-same cursor for new samples. An expired/future cursor or different session returns
-`reset:true` and starts at the oldest retained sample; discard the old browser
-cache. Malformed limits/cursors or a cursor without a session return HTTP 400.
-Requests without pagination parameters now return the first bounded page.
-
-State and command snapshots include `session` (boot ID) and increasing `revision`
-for ordering concurrent replies. Execution replies retain AC HTTP 200/400 and
-lamp HTTP 202/400 semantics. Validation, full-queue, timeout, and disconnect errors
-may contain only `ok:false` and `message`; HTTP 503 never implies a command
-succeeded and must not trigger an automatic resend.
-
-A lamp response of 202 means accepted for asynchronous processing. The nested
-`lamp` object in `/api/state` includes `busy`, `completed`, `ok`, and the eventual
-message. Serial and web share validated command handlers. Wi-Fi credentials
-are not included in web responses.
+Commands use form encoding. A queued lamp command's `202` response confirms
+acceptance; poll state for completion. Interrupted command responses can leave
+the outcome unknown: read state before retrying and never automatically resend.
+Serial and web share validated command handlers. Wi-Fi credentials are not
+included in web responses.
 
 ## Host checks and deferred migration
 

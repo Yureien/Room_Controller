@@ -10,6 +10,8 @@
   Link to existing documentation rather than duplicating it here.
 - Inspect `git status` first and preserve unrelated user changes. Keep generated
   files and credentials out of commits. Update README/help/UI when behavior changes.
+- Keep the [HTTP API reference](docs/http-api.md) aligned with endpoint, command,
+  field, and response semantics.
 - Upload firmware only when requested. Report hardware checks separately from
   builds and host tests.
 
