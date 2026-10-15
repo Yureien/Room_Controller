@@ -222,7 +222,7 @@ transfer in the background while the main loop keeps servicing controls.
 ## Async HTTP ownership
 
 Network callbacks validate request parameters and submit copied inputs through
-`src/web_dispatch.h`. Only the main loop executes AC/lamp commands, takes state
+`lib/ControllerWeb/src/web_dispatch.h`. Only the main loop executes AC/lamp commands, takes state
 and history snapshots, writes settings, and updates power/activity state. No
 controller objects, mutable history references, or HTTP request pointers cross
 the task boundary. The existing BLE worker still communicates through its own
@@ -238,7 +238,7 @@ cancel unclaimed work; a command already claimed may have taken effect, so check
 the actual device before retrying. Neither firmware nor browser resends commands
 automatically.
 
-`src/web_response.h` waits for the reply using the network task's existing TCP
+`lib/ControllerWeb/src/web_response.h` waits for the reply using the network task's existing TCP
 poll callbacks, then gives the library an independent copy for the transfer. All
 request/response operations and disconnect cleanup stay on the network task;
 slot generations prevent a late completion from affecting a reused slot. Reply
@@ -520,3 +520,22 @@ applies to serial, HTTP, history, and automation. `AcController` owns IR,
 Auto-Cool, fan memory, and the unchanged legacy AC/settings records. Separate
 record save outcomes feed the existing aggregate Auto-Cool warning; a successful
 settings save cannot erase a failed recovery power-state save.
+
+`ControllerNetwork` owns only the legacy network record and Wi-Fi/mDNS lifecycle.
+It retries failed mDNS startup every 30 seconds while retaining IP access.
+`ControllerWeb` owns the listener, routes, immutable boot session, dispatch, and
+network-task activity flag. `src/controller_app.cpp` owns composition, history,
+state revisions, and loop scheduling; `src/serial_console.cpp` handles prompts
+and the bounded one-line-per-loop parser. `src/board_config.h` holds GPIOs.
+The existing power policy is mechanically relocated into `src/power_runtime.*`.
+
+Browser source lives in `web/index.html`, `web/style.css`, and
+`web/controller.js`. The PlatformIO pre-build hook invokes the stdlib-only
+`scripts/embed_web.py`, generating `$BUILD_DIR/generated/web_ui.h` before
+compilation. Every build notices asset edits; unchanged generated content keeps
+its timestamp. Only `controller_web.cpp` includes the page. No Node dependencies,
+external assets, filesystem upload, or separate website deployment is involved.
+For manual inspection: `python3 scripts/embed_web.py --output /tmp/web_ui.h`.
+Browser boot-session changes retire obsolete replies and pending lamp operation
+tracking while preserving unsent field edits. Dense history lines retain isolated
+sample markers without drawing a circle for every connected point.

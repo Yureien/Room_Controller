@@ -41,7 +41,7 @@ class ControllerWebResponse : public AsyncWebServerResponse {
     if (!ready) return;  // AsyncTCP polls again; no blocking or busy wait.
     // request->abort() stops working after the server marks this deferred
     // response as sent. Close the underlying connection on later failures.
-    if (!response_) { request->client()->close(true); return; }
+    if (!response_) { request->client()->close(); return; }
     response_->addHeader("Cache-Control", "no-store");
     response_->_respond(request);
   }

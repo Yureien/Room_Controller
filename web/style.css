@@ -1,0 +1,102 @@
+:root { color-scheme: light; --ink:#193944; --muted:#677b83;
+  --accent:#087d8c; --line:#dce5e8; --paper:#fdfefe; }
+* { box-sizing:border-box; }
+body { margin:0; background:#edf2f4; color:var(--ink);
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+main { max-width:450px; margin:28px auto; padding:0 18px; }
+header { display:flex; align-items:center; justify-content:space-between;
+  gap:10px; margin:0 4px 18px; }
+h1 { font-size:22px; margin:0; letter-spacing:-.5px; }
+.eyebrow { font-size:10px; font-weight:700; letter-spacing:2px;
+  color:var(--muted); margin:0 0 5px; text-transform:uppercase; }
+.connection { font-size:12px; white-space:nowrap; color:var(--muted); }
+.dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+  background:#a4afb4; margin-right:6px; }
+.connected .dot { background:#1a9a68; }
+.remote { border:1px solid #d7e1e5; border-radius:28px; padding:22px;
+  background:var(--paper); box-shadow:0 16px 40px #1939440c; }
+.section-title { margin:0 0 14px; font-size:18px; }
+.screen { padding:18px 20px; border-radius:17px; background:#e7f0ed;
+  border:1px solid #d7e4df; min-height:160px; }
+.screen-top { display:flex; justify-content:space-between;
+  align-items:center; font-size:12px; font-weight:600; }
+.power-state { background:#d5e0dc; padding:4px 9px; border-radius:20px; }
+.power-state.on { background:#c3e7d6; color:#146343; }
+.temperature { display:flex; justify-content:center; align-items:start;
+  margin:10px 0 6px; }
+#temperature { font-size:64px; font-weight:500; line-height:1;
+  letter-spacing:-4px; font-variant-numeric:tabular-nums; }
+#units { font-size:21px; margin:7px 0 0 5px; }
+.screen-bottom { display:flex; justify-content:space-between;
+  font-size:12px; color:#4a6963; }
+.flags { margin-top:10px; font-size:11px; text-align:center;
+  min-height:15px; color:#4a6963; }
+.setpoint-label { text-align:center; margin-top:10px; font-size:10px;
+  color:#4a6963; }
+.measured { display:flex; justify-content:space-between; align-items:center;
+  gap:10px; margin-top:14px; padding-top:12px; border-top:1px solid #cbdcd5;
+  font-size:12px; color:#4a6963; }
+#measured-temperature { font-size:22px; font-weight:600;
+  font-variant-numeric:tabular-nums; white-space:nowrap; }
+#sensor-status { margin-top:3px; font-size:10px; }
+button { font:inherit; color:var(--ink); cursor:pointer; touch-action:manipulation;
+  border:1px solid var(--line); background:white; transition:background .15s; }
+button:hover { background:#f0f6f7; }
+button:active { transform:translateY(1px); }
+button:focus-visible { outline:3px solid #087d8c66; outline-offset:3px; }
+button:disabled { cursor:default; opacity:.45; transform:none; }
+.main-buttons { display:flex; align-items:center; justify-content:center;
+  gap:18px; margin:22px 0; }
+.temperature-button { width:64px; height:56px; border-radius:18px;
+  font-size:28px; font-weight:400; }
+.power-button { width:76px; height:76px; border-radius:50%; border:0;
+  background:var(--ink); color:white; font-size:11px; }
+.power-button:hover { background:#254f5d; }
+.power-button.active { background:var(--accent); }
+.power-button svg { display:block; width:24px; height:24px; margin:0 auto 5px; }
+.grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.key { min-height:76px; border-radius:16px; padding:11px 4px 9px;
+  font-size:11px; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:6px; }
+.key-icon { font-size:21px; line-height:1; font-weight:500; }
+.key.active { background:#eaf6f6; border-color:#89bcc3; color:#076f7e; }
+.key-value { font-size:10px; color:var(--muted); }
+#feedback { min-height:36px; margin:17px 0 0; font-size:12px;
+  text-align:center; color:var(--muted); line-height:1.5; }
+#feedback.error { color:#b23c3c; }
+.send-again { display:block; margin:0 auto; border:0; padding:8px 12px;
+  font-size:12px; color:var(--accent); background:transparent; }
+.send-again.active { background:#eaf6f6; border-radius:10px; }
+.lamp { margin-top:18px; border:1px solid #d7e1e5; border-radius:24px;
+  padding:22px; background:var(--paper); }
+.lamp h2 { margin:0; font-size:18px; }
+.lamp-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+#lamp-link { font-size:11px; color:var(--muted); }
+#lamp-name { margin:6px 0 15px; font-size:12px; color:var(--muted); }
+.lamp-power { display:flex; gap:8px; margin-bottom:14px; }
+.lamp button { border-radius:10px; padding:9px 13px; font-size:12px; }
+.lamp button.active { background:#eaf6f6; border-color:#89bcc3; }
+.palette { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+.lamp .swatch { padding:0; height:39px; border:2px solid #fff;
+  box-shadow:0 0 0 1px var(--line); }
+.swatch.selected { outline:2px solid var(--ink); outline-offset:2px; }
+.lamp-row { display:flex; align-items:center; gap:10px; margin-top:16px; }
+.lamp-row label { font-size:12px; min-width:65px; }
+.lamp-row input[type=range], .lamp-row select { min-width:0; flex:1; }
+.lamp-row input[type=color] { height:36px; width:70px; padding:2px;
+  border:1px solid var(--line); border-radius:8px; background:white; }
+.lamp-row output { font-size:12px; min-width:34px; }
+.lamp-row select { padding:8px 4px; border:1px solid var(--line); border-radius:8px; }
+#lamp-feedback { margin:15px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
+#lamp-feedback.error { color:#b23c3c; }
+.lamp-note { font-size:10px; color:var(--muted); line-height:1.5; margin:10px 0 0; }
+.history { margin-top:18px; padding:20px; border:1px solid #d7e1e5;
+  border-radius:24px; background:var(--paper); }
+.history h2 { margin:0 0 12px; font-size:18px; }
+#temperature-chart { display:block; width:100%; height:180px; }
+#history-status { font-size:11px; color:var(--muted); line-height:1.5; }
+footer { margin:17px 8px; text-align:center; font-size:11px;
+  line-height:1.6; color:var(--muted); }
+#address { display:block; margin-top:6px; color:#49636d; }
+@media(max-width:360px) { main { padding:0 10px; } .remote { padding:16px; }
+  .main-buttons { gap:12px; } }
