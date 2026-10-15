@@ -22,4 +22,4 @@ been rerun.
 
 No on-device validation was performed. Host fakes and firmware build sizes cannot
 prove IR reception, electrical stability, Wi-Fi/BLE behavior, or runtime heap and
-stack safety. See docs/refactor-review.md for the review handoff.
+stack safety. See README.md for the runtime limitations.

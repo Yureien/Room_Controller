@@ -559,6 +559,3 @@ The sensor conversion deadline uses monotonic microseconds, avoiding an early
 read at a millisecond boundary. Delayed reads retain the conversion completion
 time rather than acquiring false freshness after a stalled loop. Legacy NVS
 record sizes and key field offsets are checked at compile time.
-
-The [refactor review handoff](docs/refactor-review.md) records changes, build
-size comparisons, and outstanding limitations for the next review.
