@@ -222,8 +222,9 @@ transfer in the background while the main loop keeps servicing controls.
 ## Async HTTP ownership
 
 Network callbacks validate request parameters and submit copied inputs through
-`lib/ControllerWeb/src/web_dispatch.h`. Only the main loop executes AC/lamp commands, takes state
-and history snapshots, writes settings, and updates power/activity state. No
+`lib/ControllerWeb/src/web_dispatch.h`. Only the main loop executes AC/lamp
+commands, takes state and history snapshots, writes settings, and updates
+power/activity state. No
 controller objects, mutable history references, or HTTP request pointers cross
 the task boundary. The existing BLE worker still communicates through its own
 queues and atomics. AsyncTCP is pinned to core 0 so its callbacks do not preempt
@@ -238,8 +239,9 @@ cancel unclaimed work; a command already claimed may have taken effect, so check
 the actual device before retrying. Neither firmware nor browser resends commands
 automatically.
 
-`lib/ControllerWeb/src/web_response.h` waits for the reply using the network task's existing TCP
-poll callbacks, then gives the library an independent copy for the transfer. All
+`lib/ControllerWeb/src/web_response.h` waits for the reply using the network
+task's existing TCP poll callbacks, then gives the library an independent copy
+for the transfer. All
 request/response operations and disconnect cleanup stay on the network task;
 slot generations prevent a late completion from affecting a reused slot. Reply
 startup can wait for the next TCP poll (normally up to roughly 500 ms), and full
@@ -297,7 +299,7 @@ Routine web polling and temperature sampling do not hold the LED on. The
 board's separate red power LED is wired directly to power and cannot be
 switched by firmware.
 The [Ai-Thinker schematic](https://robu.in/wp-content/uploads/2017/10/SKU-44682-datasheet.pdf)
-connects the blue LED from GPIO2 to ground; `kActivityLedOnLevel` in `main.cpp`
+connects the blue LED from GPIO2 to ground; `kActivityLedOnLevel` in `src/board_config.h`
 can be changed to `LOW` for a board clone with inverted LED wiring.
 
 Wi-Fi remains associated so the web page stays reachable.
@@ -474,46 +476,57 @@ A lamp response of 202 means accepted for asynchronous processing. The nested
 message. Serial and web share validated command handlers. Wi-Fi credentials
 are not included in web responses.
 
-Protocol checks run on a host with Python 3 and g++:
+## Host checks and deferred migration
+
+Tests were explicitly deferred for the October 2026 refactor; only normal
+firmware builds and source review were performed. Existing tests are preserved.
+Their pre-refactor results do not establish coverage of the extracted modules.
+See [test/README](test/README) for the inventory and migration work.
+
+The portable native checks now use these include directories (commands have not
+been rerun as part of this refactor):
 
 ```sh
-python3 test/test_lotus_protocol.py
-python3 test/test_lotus_protocol.py --reference /path/to/lotus-lamp-python
-g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_test.cpp -o /tmp/room-temperature-test
-/tmp/room-temperature-test
-g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/temperature_history_api_test.cpp -o /tmp/room-history-api-test
-/tmp/room-history-api-test
-g++ -std=c++11 -Wall -Wextra -Werror -Isrc test/auto_cool_test.cpp -o /tmp/room-auto-cool-test
-/tmp/room-auto-cool-test
-python3 test/test_auto_cool_integration.py
-g++ -std=c++11 -Wall -Wextra -Werror -pthread -Isrc test/web_dispatch_test.cpp -o /tmp/room-web-dispatch-test
-/tmp/room-web-dispatch-test
-python3 test/test_web_async.py
-node test/test_web_ui.js
+g++ -std=c++11 -Wall -Wextra -Werror -Ilib/ControllerCore/src test/temperature_history_test.cpp -o /tmp/room-temperature-test
+g++ -std=c++11 -Wall -Wextra -Werror -Ilib/ControllerCore/src test/temperature_history_api_test.cpp -o /tmp/room-history-api-test
+g++ -std=c++11 -Wall -Wextra -Werror -Ilib/ControllerCore/src test/auto_cool_test.cpp -o /tmp/room-auto-cool-test
+g++ -std=c++11 -Wall -Wextra -Werror -pthread -Ilib/ControllerWeb/src test/web_dispatch_test.cpp -o /tmp/room-web-dispatch-test
 ```
 
-The async host checks use a fake HTTP transport and verify routing, task
-ownership, command priority, overload/expiry, disconnected requests, immutable
-history snapshots, and concurrent slot reuse. They do not measure on-device
-latency, heap/stack headroom, Wi-Fi/BLE coexistence, or actual IR reception.
-Hardware validation should include a full history buffer, simultaneous controls
-and slow history transfers, multiple tabs, and Wi-Fi loss/reconnection.
+The Python/JavaScript harnesses still assume the former `src/` layout, inline
+page, or functions in `main.cpp`. Migrate them to library interfaces and `web/`
+assets before using them. The optional Lotus protocol reference comparison uses
+upstream Python methods without Bluetooth dependencies.
 
-The optional reference check compares C++ packets against the upstream Python
-methods without installing or using Python Bluetooth dependencies.
+Hardware validation remains outstanding: IR reception, sensor reconnect and
+parasite operation, a full history buffer, simultaneous controls and slow HTTP
+transfers, multiple tabs, Wi-Fi recovery, BLE handoff to a phone, heap/stack
+headroom, and supply stability. The confirmed brownout reset needs electrical
+follow-up; software lifecycle fixes do not establish that it is repaired.
 
 ## Firmware components
 
-Reusable code uses conventional PlatformIO layouts under `lib/`: `ControllerCore`
-contains portable automation/history/LED logic and the existing power flag;
-`ControllerSupport` supplies JSON escaping; `LotusLamp` owns settings, command
-queues, and a separate worker/session implementation. Libraries do not depend
-on application globals. BLE objects and callbacks live on the worker; NVS and
-result application remain on the main loop.
+Reusable firmware uses conventional PlatformIO `lib/<name>/src` directories;
+there are no forwarding headers or reverse dependencies on application globals.
 
-Tests are deferred for this refactor. Existing source-extraction harnesses may
-need path/interface migration before reuse; their earlier results do not verify
-the refactored firmware.
+| Source | Responsibility and owner |
+| --- | --- |
+| `src/main.cpp`, `controller_app.*` | Arduino entry points, composition, loop scheduling, history, state revision |
+| `src/serial_console.*`, `board_config.h` | Serial routing/prompts/line budget and board pins |
+| `src/power_runtime.*` | Existing power policy, relocated without tuning |
+| `lib/ControllerCore/src` | Portable Auto-Cool, history/API, reading snapshots, LED logic; existing power flag |
+| `lib/ControllerSupport/src` | Shared JSON escaping and hexadecimal validation |
+| `lib/AcController/src` | IR state, automation actions, fan memory, AC/Auto-Cool persistence; main loop |
+| `lib/TemperatureSensor/src` | Incremental discovery, nonblocking conversion, freshness; main loop |
+| `lib/ControllerNetwork/src` | Legacy network record, Wi-Fi/mDNS lifecycle; main loop |
+| `lib/ControllerWeb/src` | Routes, listener, session, bounded dispatch, response adapter; HTTP objects on AsyncTCP |
+| `lib/LotusLamp/src` | Main-loop settings/parser/results; separate BLE worker/session and portable encoder |
+| `web/`, `scripts/embed_web.py` | Editable page sources and deterministic firmware embedding |
+
+Controllers have application lifetime; do not destroy/reinitialize them while
+callbacks or tasks are live. Large history/controller owners cannot be copied.
+The BLE worker owns BLE objects; only the main loop applies settings and writes
+NVS. See [async ownership](#async-http-ownership) for the transport boundary.
 
 `TemperatureSensor` searches one OneWire address per service call (up to 32 per
 pass), retries missing hardware every five seconds, and retains parasite power
@@ -546,3 +559,6 @@ The sensor conversion deadline uses monotonic microseconds, avoiding an early
 read at a millisecond boundary. Delayed reads retain the conversion completion
 time rather than acquiring false freshness after a stalled loop. Legacy NVS
 record sizes and key field offsets are checked at compile time.
+
+The [refactor review handoff](docs/refactor-review.md) records changes, build
+size comparisons, and outstanding limitations for the next review.
