@@ -23,6 +23,7 @@
 #include <cmath>
 #include "web_ui.h"
 #include "lotus_lamp.h"
+#include "json_utils.h"
 #include "temperature_history.h"
 #include "temperature_history_api.h"
 #include "web_dispatch.h"
@@ -850,24 +851,6 @@ bool executeAcCommand(String line, String *message) {
   if (command != "state" && !saveAutoCoolSettings())
     *message += " Warning: Auto-Cool settings could not be saved.";
   return true;
-}
-
-String jsonString(const String &value) {
-  String result = "\"";
-  for (size_t i = 0; i < value.length(); i++) {
-    const uint8_t c = value[i];
-    if (c == '"' || c == '\\') {
-      result += '\\';
-      result += static_cast<char>(c);
-    } else if (c < 32) {
-      char escaped[7];
-      snprintf(escaped, sizeof(escaped), "\\u%04x", c);
-      result += escaped;
-    } else {
-      result += static_cast<char>(c);
-    }
-  }
-  return result + '"';
 }
 
 String stateJson(const String &message = "", const bool ok = true) {

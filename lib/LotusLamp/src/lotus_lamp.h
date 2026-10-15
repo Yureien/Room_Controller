@@ -10,6 +10,9 @@
 
 class LotusLampController {
  public:
+  LotusLampController() = default;
+  LotusLampController(const LotusLampController&) = delete;
+  LotusLampController& operator=(const LotusLampController&) = delete;
   void begin();
   void service(bool printEvents = true);
   bool command(String line, bool allowSetup, String &message);
@@ -26,6 +29,7 @@ class LotusLampController {
     uint8_t addressType, color[3], brightness, speed, effect;
     uint8_t power, powerKnown, solid;
   };
+  static_assert(sizeof(Settings) == 156, "Legacy lamp NVS layout changed");
   struct Device {
     char address[18], name[48];
     uint8_t type;
@@ -65,6 +69,6 @@ class LotusLampController {
   bool save();
   bool enqueue(const Job &job, String &message);
   static void workerEntry(void *self);
-  void worker();
+  struct Worker;
 };
 #endif

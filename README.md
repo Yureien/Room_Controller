@@ -260,7 +260,7 @@ To opt in, append the power-saving define to the existing `build_flags` in the
 build_flags = -DCONFIG_ASYNC_TCP_RUNNING_CORE=0 -DROOM_CONTROLLER_POWER_SAVING=1
 ```
 
-`src/power_config.h` defaults the flag to `0` and accepts only `0` or `1`.
+`lib/ControllerCore/src/power_config.h` defaults the flag to `0` and accepts only `0` or `1`.
 SDK power-management support remains compiled so either mode can be built.
 
 Bluetooth stays off at boot, including when a strip is saved. A light command
@@ -499,3 +499,16 @@ and slow history transfers, multiple tabs, and Wi-Fi loss/reconnection.
 
 The optional reference check compares C++ packets against the upstream Python
 methods without installing or using Python Bluetooth dependencies.
+
+## Firmware components
+
+Reusable code uses conventional PlatformIO layouts under `lib/`: `ControllerCore`
+contains portable automation/history/LED logic and the existing power flag;
+`ControllerSupport` supplies JSON escaping; `LotusLamp` owns settings, command
+queues, and a separate worker/session implementation. Libraries do not depend
+on application globals. BLE objects and callbacks live on the worker; NVS and
+result application remain on the main loop.
+
+Tests are deferred for this refactor. Existing source-extraction harnesses may
+need path/interface migration before reuse; their earlier results do not verify
+the refactored firmware.
