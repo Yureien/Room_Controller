@@ -228,9 +228,11 @@ available. No chart data is sent to an external API.
 without extra history requests. The selected range shows its reading count and
 minimum/maximum; unloaded ranges, missing readings, and stale cached data are
 identified explicitly. Hover, touch, or focus the graph and use Left/Right or
-Home/End to inspect a point's local time and temperature. Missing samples say
-“No reading”; one-point history uses the basic graph. Page touch scrolling
-remains available, with no drag zoom or animated redraws.
+Home/End to show a tooltip with a point's local time (including seconds) and
+temperature. Tooltips work in both renderers, remain visible through normal
+refreshes, and dismiss on mouse leave, Escape, blur, or tapping outside. Missing
+samples say “No reading”; one-point history uses the basic graph. Page touch
+scrolling remains available, with no drag zoom or animated redraws.
 
 Times use the browser's clock and sample ages, so the ESP32 does not need NTP.
 History is fetched separately from settings in pages of at most 128 samples (under 1.2 KiB

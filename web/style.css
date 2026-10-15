@@ -112,6 +112,10 @@ button:disabled, input:disabled, select:disabled { cursor:default; opacity:.5; t
 .history-plot { position:relative; height:230px; min-width:0; touch-action:pan-y; }
 #temperature-chart { display:block; width:100%; height:100%; }
 #history-enhanced { position:absolute; inset:0; min-width:0; }
+.history-tooltip { position:absolute; z-index:10; pointer-events:none; max-width:calc(100% - 16px);
+  padding:9px 12px; border:1px solid var(--active-line); border-radius:10px;
+  background:var(--paper); color:var(--ink); box-shadow:var(--shadow);
+  font-size:12px; line-height:1.5; white-space:pre-line; font-variant-numeric:tabular-nums; }
 #history-enhanced .uplot { color:var(--muted); font-family:inherit; }
 #history-enhanced .u-cursor-x, #history-enhanced .u-cursor-y { border-color:var(--muted); }
 .chart-caption { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px; margin-top:6px; font-size:11px; color:var(--muted); }

@@ -8,12 +8,13 @@
   const summary = get('history-summary');
   const status = get('history-status');
   const readout = get('history-inspection');
+  const tooltip = get('history-tooltip');
   const rangeButtons = [...document.querySelectorAll('[data-history-hours]')];
   const clock = seconds => new Date(seconds * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   const pointClock = seconds => new Date(seconds * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
   let cached = null, received = 0, hours = 24, stale = false;
   let dirty = true, pendingFrame = 0, plot = null, libraryReady = false, libraryFailed = false;
-  let selected = -1, geometry = null;
+  let selected = -1, selectedTime = null, pointer = null, geometry = null;
   let view = {x:[], y:[], count:0, low:20, high:30, min:0, max:0, start:0, end:1};
 
   // age is the last RETURNED sample's age, not the newest ring sample's age.
@@ -62,14 +63,72 @@
     else status.textContent = view.x.length ? 'Last sample ' + clock(view.x[view.x.length - 1]) +
       ' · Last ' + hours + (hours === 1 ? ' hour' : ' hours') : 'No readings yet. Check the sensor.';
     canvas.setAttribute('aria-label', summary.textContent + '. ' + status.textContent);
-    if (selected >= view.x.length) selected = -1;
-    inspect(selected);
+  }
+  function dismiss() {
+    selected = -1;
+    selectedTime = pointer = null;
+    tooltip.hidden = true;
+    frame.setAttribute('aria-describedby', 'history-summary history-inspection');
+    readout.textContent = 'Hover, touch, or use arrow keys to inspect';
+    try { if (plot) plot.setCursor({left:-10,top:-10}); } catch (_) {}
+  }
+  function plotBounds() {
+    if (plot && !host.hidden) return plot.over.getBoundingClientRect();
+    if (!geometry) return null;
+    const rect = frame.getBoundingClientRect();
+    return {left:rect.left + geometry.left, top:rect.top + geometry.top,
+      width:geometry.right - geometry.left, height:geometry.bottom - geometry.top};
+  }
+  function indexAtTime(time) {
+    if (!view.x.length) return -1;
+    const step = cached ? cached.interval : 5;
+    // Unfetched backfill and expired points do not become boundary readings.
+    if (time < view.x[0] - step / 2 || time > view.x[view.x.length - 1] + step / 2) return -1;
+    return Math.max(0, Math.min(view.x.length - 1, Math.round((time - view.x[0]) / step)));
   }
   function inspect(index) {
+    const area = plotBounds();
+    if (index < 0 || index >= view.x.length || !area) { dismiss(); return; }
     selected = index;
-    readout.textContent = index >= 0 && index < view.x.length ? pointClock(view.x[index]) + ' · ' +
-      (Number.isFinite(view.y[index]) ? view.y[index].toFixed(2) + ' °C' : 'No reading') :
-      'Hover, touch, or use arrow keys to inspect';
+    selectedTime = view.x[index];
+    const value = Number.isFinite(view.y[index]) ? view.y[index].toFixed(2) + ' °C' : 'No reading';
+    const time = pointClock(selectedTime);
+    readout.textContent = time + ' · ' + value;
+    tooltip.textContent = time + '\n' + value;
+    tooltip.hidden = false;
+    frame.setAttribute('aria-describedby', 'history-summary history-tooltip');
+    const rect = frame.getBoundingClientRect();
+    const x = pointer ? pointer.clientX - rect.left : area.left - rect.left +
+      (selectedTime - view.start) * area.width / (view.end - view.start);
+    const y = pointer ? pointer.clientY - rect.top : area.top - rect.top +
+      (Number.isFinite(view.y[index]) ? (view.high - view.y[index]) / (view.high - view.low) : .5) * area.height;
+    const width = tooltip.offsetWidth, height = tooltip.offsetHeight, gap = 12, edge = 8;
+    let left = x + gap, top = y - height - gap;
+    if (left + width > frame.clientWidth - edge) left = x - width - gap;
+    if (top < edge) top = y + gap;
+    tooltip.style.left = Math.max(edge, Math.min(frame.clientWidth - width - edge, left)) + 'px';
+    tooltip.style.top = Math.max(edge, Math.min(frame.clientHeight - height - edge, top)) + 'px';
+  }
+  function syncCursor() {
+    if (!plot || host.hidden || selected < 0) return;
+    try {
+      plot.setCursor({left:plot.valToPos(selectedTime,'x'),
+        top:Number.isFinite(view.y[selected]) ? plot.valToPos(view.y[selected],'y') : 0});
+    } catch (_) { abandonEnhancement(); schedule(); }
+  }
+  function point(event) {
+    const area = plotBounds();
+    if (!area || event.clientX < area.left || event.clientX > area.left + area.width ||
+        event.clientY < area.top || event.clientY > area.top + area.height) { dismiss(); return; }
+    pointer = event.pointerType === 'touch' ? null : {clientX:event.clientX,clientY:event.clientY};
+    const time = view.start + (event.clientX - area.left) * (view.end - view.start) / area.width;
+    inspect(indexAtTime(time));
+    if (!pointer) syncCursor();
+  }
+  function refreshSelection() {
+    // Pointer coordinates survive normal polling; keyboard/touch keep their time.
+    if (pointer) point(pointer);
+    else if (selectedTime != null) { inspect(indexAtTime(selectedTime)); syncCursor(); }
   }
 
   function basic(width, height, color) {
@@ -84,7 +143,7 @@
     const left = 43, right = width - 10, top = 12, bottom = height - 30;
     const x = time => left + (time - view.start) * (right - left) / (view.end - view.start);
     const y = value => bottom - (value - view.low) * (bottom - top) / (view.high - view.low);
-    geometry = {left,right};
+    geometry = {left,right,top,bottom};
     if (!view.count) {
       ctx.fillText(cached && cached.more ? 'Loading selected range…' : 'Waiting for measured temperatures', 6, height / 2);
       return;
@@ -142,22 +201,23 @@
           font:'11px system-ui',space:70,values:(_,ticks) => ticks.map(axisClock)},
         {stroke:color('muted'),grid:{stroke:color('chart-grid'),width:1},ticks:{show:false},
           font:'11px system-ui',size:48,values:(_,ticks) => ticks.map(v => v.toFixed(1) + '°')}
-      ],
-      hooks:{setCursor:[self => { if (self.cursor.idx != null) inspect(self.cursor.idx); }]}
+      ]
     }, [view.x, view.y], host);
   }
   function render() {
     pendingFrame = 0;
     if (document.hidden) return;
     try {
-      if (dirty) { view = project(); dirty = false; selected = -1; }
+      if (dirty) { view = project(); dirty = false; }
       messages();
       const width = Math.floor(frame.clientWidth), height = Math.floor(frame.clientHeight);
       if (!width || !height) return;
       const color = colors();
       // Always prepare a local frame before attempting optional external code.
       basic(width, height, color);
-      if (!libraryReady || libraryFailed || view.x.length < 2 || !view.count) { useBasic(); return; }
+      if (!libraryReady || libraryFailed || view.x.length < 2 || !view.count) {
+        useBasic(); refreshSelection(); return;
+      }
       host.hidden = false;
       try {
         if (!plot) plot = createPlot(width, height, color);
@@ -168,9 +228,11 @@
         canvas.hidden = true;
         get('chart-mode').textContent = 'Interactive chart';
       } catch (_) { abandonEnhancement(); }
+      refreshSelection();
     } catch (_) {
       // A drawing failure must not escape into the history fetch/error path.
       abandonEnhancement();
+      dismiss();
       status.textContent = stale ? 'History unavailable. Showing cached readings.' : 'Chart unavailable. Readings will refresh.';
     }
   }
@@ -207,6 +269,7 @@
   rangeButtons.forEach(button => button.addEventListener('click', () => {
     hours = Number(button.dataset.historyHours);
     rangeButtons.forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+    dismiss();
     dirty = true; schedule();
   }));
   frame.addEventListener('keydown', event => {
@@ -215,25 +278,24 @@
     const last = view.x.length - 1;
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? last :
       Math.max(0, Math.min(last, (selected < 0 ? last : selected) + (event.key === 'ArrowLeft' ? -1 : 1)));
+    pointer = null;
     inspect(next);
-    if (plot && !host.hidden) {
-      try { plot.setCursor({left:plot.valToPos(view.x[next],'x'),top:0}); } catch (_) { abandonEnhancement(); schedule(); }
-    }
+    syncCursor();
   });
-  const point = event => {
-    if (!view.x.length) return;
-    try {
-      const area = plot && !host.hidden ? plot.over.getBoundingClientRect() : frame.getBoundingClientRect();
-      const left = host.hidden && geometry ? geometry.left : 0;
-      const right = host.hidden && geometry ? geometry.right : area.width;
-      const fraction = Math.max(0, Math.min(1, (event.clientX - area.left - left) / (right - left)));
-      const time = view.start + fraction * (view.end - view.start);
-      const index = Math.max(0, Math.min(view.x.length - 1, Math.round((time - view.x[0]) / (cached ? cached.interval : 5))));
-      inspect(index);
-    } catch (_) { /* Point inspection cannot affect page scrolling or controls. */ }
-  };
-  frame.addEventListener('pointermove', point, {passive:true});
-  frame.addEventListener('pointerdown', point, {passive:true});
+  // Native pointer selection owns the tooltip for both renderers. uPlot cursor
+  // hooks never select another index after our handler (especially at nulls).
+  frame.addEventListener('pointermove', event => {
+    if (event.pointerType !== 'touch') point(event);
+  }, {passive:true});
+  frame.addEventListener('pointerdown', event => {
+    frame.focus({preventScroll:true});
+    point(event);
+  }, {passive:true});
+  frame.addEventListener('pointerleave', event => { if (event.pointerType !== 'touch') dismiss(); });
+  frame.addEventListener('pointercancel', dismiss);
+  frame.addEventListener('blur', dismiss);
+  document.addEventListener('pointerdown', event => { if (!frame.contains(event.target)) dismiss(); }, {passive:true});
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') dismiss(); });
   if (window.ResizeObserver) new ResizeObserver(schedule).observe(frame);
   window.addEventListener('resize', schedule);
   document.addEventListener('room-theme-change', () => {
@@ -242,7 +304,10 @@
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
   window.RoomHistory = {
-    update(data, at) { cached = data; received = at; stale = false; dirty = true; schedule(); },
+    update(data, at) {
+      if (!data || (cached && (data.session !== cached.session || data.reset))) dismiss();
+      cached = data; received = at; stale = false; dirty = true; schedule();
+    },
     unavailable() { stale = true; schedule(); }
   };
   schedule();
