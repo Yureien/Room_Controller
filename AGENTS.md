@@ -68,6 +68,8 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
   The library's Power command clamps targets below 24°C: restore the target in a
   separate packet after Power On. Preserve hysteresis, the 20-minute cooling
   trial, capped repeat-recovery backoff, and Turbo's 20-minute/5-minute timers.
+  Automatic IR uses three transmissions two seconds apart; queued packet pairs
+  preserve Power On/target ordering and cannot outlive cancellation/new commands.
 - Preserve `partitions.csv` offsets and versioned NVS compatibility. AC/network
   use legacy namespace `ac-controller`; lamp settings use `lotus-lamp`.
   Deduplicate writes. Auto-Cool enabled/target settings persist, while history,

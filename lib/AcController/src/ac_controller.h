@@ -52,9 +52,20 @@ class AcController {
   bool autoCoolSettingsSaved = true, acStateSaved = true;
   uint8_t normalFan = kBluestarFanLow;
   uint32_t commandsSent = 0;
+  static constexpr uint8_t kAutomaticTransmissions = 3;
+  static constexpr uint32_t kAutomaticRepeatMs = 2000;
+  // At most Power On followed by target restoration. New actions supersede it.
+  uint8_t automaticPackets[2][kBluestarStateLength]{};
+  uint8_t automaticPacketCount = 0, automaticRepeats = 0;
+  uint32_t automaticSentAt = 0;
+  bool captureAutomaticPackets = false;
   void (*beforeIr)() = nullptr;
   void (*afterIr)() = nullptr;
-  void sendAcPacket();
+  void sendAcPacket(bool repeat = false);
+  void beginAutomaticPackets();
+  void finishAutomaticPackets();
+  void cancelAutomaticPackets();
+  void serviceAutomaticPackets();
   void restoreAutoCoolTarget();
   void stopAutoCool();
   void loadAcState();

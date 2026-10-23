@@ -180,6 +180,15 @@ Wi-Fi disconnected.
   record; unchanged values and automatic Turbo transitions do not write flash.
   Recovery updates the existing saved AC power state at Off and On, so a reboot
   during recovery leaves the AC off and does not resume a queued restart.
+- Each automatic Turbo or recovery action is transmitted **three times total,
+  two seconds apart**, using a bounded, nonblocking retry slot. Each restart
+  attempt repeats the exact Power On packet followed by any separate target
+  restoration packet; normal cooling resumes before automatic Turbo can start.
+  Repeats do not extend Turbo's timer or write flash. An accepted AC command
+  (except read-only `state`), sensor loss, a superseding automatic action, or
+  reboot clears pending repeats. A delayed loop sends one repeat at a time,
+  without catching up in a burst. The `sent` counter includes every packet;
+  there is still no acknowledgement or confirmation of IR reception.
 - On reboot, Auto-Cool resumes temperature control only if the saved AC state
   is On in Cool mode. Recovery observations, countdowns, and attempt counts
   are not persisted; a new boot starts a new observation window. No IR is sent
@@ -187,8 +196,8 @@ Wi-Fi disconnected.
 
 The controller has no AC state feedback: changes using the physical remote
 are invisible, and an IR packet can be missed. These protections use the
-controller's last requested power state. Insufficient measured cooling cannot distinguish
-a cooling fault from increased room heat or a poorly placed sensor. Verify IR
+controller's last requested power state. Insufficient measured cooling cannot
+distinguish a cooling fault from increased room heat or a poorly placed sensor. Verify IR
 reception and sensor placement on the actual AC before relying on recovery.
 
 The LED section provides On/Off, ten preset colors, a browser color picker,
@@ -528,7 +537,8 @@ g++ -std=c++11 -Wall -Wextra -Werror -pthread -Ilib/ControllerWeb/src test/web_d
 `python3 test/test_auto_cool_integration.py` now compiles the actual
 `AcController` against host Arduino/IR/NVS fakes. It covers Turbo expiry and
 cooldown, repeated recovery/backoff, stored targets/fans, separate Power/target
-packets, cancellation, IR hooks, write behavior, raw imports, reboot, and rollover. It does not establish physical IR reception.
+packets, timed IR repeats/supersession, cancellation, IR hooks, write behavior,
+raw imports, reboot, and rollover. It does not establish physical IR reception.
 `node test/test_ac_ui.js` loads the current browser controller with DOM fakes
 and checks Turbo display/cooldown, recovery controls, and cancellation.
 

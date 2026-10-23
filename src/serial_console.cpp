@@ -60,6 +60,7 @@ void SerialConsole::printHelp() {
   Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
   Serial.println(F("  autocool on|off|toggle (AC on in Cool mode; valid sensor required)"));
   Serial.println(F("    Recovery: 5 min settling + 15 min measuring; Off waits 5/10/20/30 min."));
+  Serial.println(F("    Automatic IR: 3 transmissions, 2 seconds apart; new commands cancel repeats."));
   Serial.println(F("  wifi setup / wifi status / wifi reconnect"));
   Serial.println(F("  wifi forget"));
   Serial.println(F("  hostname [new-name]   (without .local; saved in flash)"));

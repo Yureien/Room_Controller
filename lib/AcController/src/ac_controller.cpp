@@ -32,12 +32,45 @@ void AcController::begin(void (*before)(), void (*after)()) {
   loadAutoCoolSettings();
 }
 
-void AcController::sendAcPacket() {
+void AcController::sendAcPacket(bool repeat) {
   if (beforeIr) beforeIr();
   ac.send();
-  turboTimer.sent(millis(), ac.getPower(), ac.getTurbo());
+  if (!repeat) turboTimer.sent(millis(), ac.getPower(), ac.getTurbo());
+  if (captureAutomaticPackets && automaticPacketCount < 2)
+    std::memcpy(automaticPackets[automaticPacketCount++], ac.getRaw(), kBluestarStateLength);
   ++commandsSent;
   if (afterIr) afterIr();
+}
+
+void AcController::cancelAutomaticPackets() {
+  captureAutomaticPackets = false;
+  automaticPacketCount = automaticRepeats = 0;
+}
+
+void AcController::beginAutomaticPackets() {
+  cancelAutomaticPackets();
+  captureAutomaticPackets = true;
+}
+
+void AcController::finishAutomaticPackets() {
+  captureAutomaticPackets = false;
+  automaticRepeats = automaticPacketCount ? kAutomaticTransmissions - 1 : 0;
+  automaticSentAt = millis();
+}
+
+void AcController::serviceAutomaticPackets() {
+  if (!automaticRepeats || millis() - automaticSentAt < kAutomaticRepeatMs) return;
+  // Main-loop ownership keeps temporary packet selection invisible to clients.
+  // setRaw preserves the library's separate normal-fan history.
+  uint8_t current[kBluestarStateLength];
+  std::memcpy(current, ac.getRaw(), sizeof(current));
+  for (uint8_t i = 0; i < automaticPacketCount; ++i) {
+    ac.setRaw(automaticPackets[i]);
+    sendAcPacket(true);
+  }
+  ac.setRaw(current);
+  --automaticRepeats;
+  automaticSentAt = millis();  // A delayed loop never sends catch-up bursts.
 }
 
 void AcController::restoreAutoCoolTarget() {
@@ -58,18 +91,29 @@ void AcController::stopAutoCool() {
 }
 
 void AcController::service(const TemperatureReading& reading, bool printEvents) {
+  if (!autoCool.enabled() || !reading.available() ||
+      !std::isfinite(reading.celsius) || reading.celsius < -55 || reading.celsius > 125)
+    cancelAutomaticPackets();
   const uint32_t now = millis();
   if (turboTimer.expire(now)) {
+    const bool automatic = autoCool.enabled();
+    if (automatic) beginAutomaticPackets();
     ac.setTurbo(false);
     sendAcPacket();
-    if (autoCool.enabled()) restoreAutoCoolTarget();
+    if (automatic) { restoreAutoCoolTarget(); finishAutomaticPackets(); }
     else saveAcState();
     if (printEvents) Serial.println(F("Turbo off: 20-minute limit; automatic Turbo paused for 5 minutes."));
   }
   const AutoCool::Action action = autoCool.update(
       now, reading.sampledAtSeconds, reading.available(),
       reading.celsius, ac.getPower(), ac.getMode() == kBluestarCool,
-      ac.getTurbo(), turboTimer.cooldownSeconds(now) == 0);
+      ac.getTurbo(), turboTimer.cooldownSeconds(now) == 0 && !automaticRepeats);
+  if (!autoCool.enabled()) cancelAutomaticPackets();
+  if (action == AutoCool::Action::None) {
+    serviceAutomaticPackets();
+    return;
+  }
+  beginAutomaticPackets();
   switch (action) {
     case AutoCool::Action::TurboOn:
     case AutoCool::Action::TurboOff:
@@ -78,6 +122,9 @@ void AcController::service(const TemperatureReading& reading, bool printEvents) 
       restoreAutoCoolTarget();
       break;
     case AutoCool::Action::PowerOff:
+      // Restart in normal cooling; finish all Power On/target repeats before
+      // allowing a new automatic Turbo command to supersede those packets.
+      ac.setTurbo(false);
       ac.setPower(false);
       sendAcPacket();
       // A reboot during recovery must restore Off, never a pending restart.
@@ -91,8 +138,9 @@ void AcController::service(const TemperatureReading& reading, bool printEvents) 
       restoreAutoCoolTarget();
       saveAcState();
       break;
-    default: return;
+    default: break;
   }
+  finishAutomaticPackets();
   // Turbo transitions never write flash. Only recovery power changes update
   // the existing saved AC state; recovery timers/backoff remain in RAM.
   if (printEvents && action == AutoCool::Action::PowerOff)
@@ -241,12 +289,14 @@ bool AcController::command(String line, String *message, const TemperatureReadin
       autoCool.enable(ac.getTemp());
     } else if (!on) {
       const bool waiting = autoCool.waiting();
+      cancelAutomaticPackets();
       stopAutoCool();
       *message = waiting ? "Auto-Cool disabled. Recovery cancelled; AC remains off." :
           "Auto-Cool disabled.";
       if (!autoCoolSettingsSaved) *message += " Warning: Auto-Cool settings could not be saved.";
       return true;
     }
+    cancelAutomaticPackets();
     *message = "Auto-Cool enabled.";
     if (!saveAcState()) *message += " Warning: AC settings could not be saved.";
     if (!saveAutoCoolSettings()) *message += " Warning: Auto-Cool settings could not be saved.";
@@ -386,6 +436,7 @@ bool AcController::command(String line, String *message, const TemperatureReadin
   } else {
     return false;
   }
+  if (command != "state") cancelAutomaticPackets();
   if (transmit) {
     // Preserve the software IR carrier's original CPU timing during sends.
     sendAcPacket();
@@ -424,6 +475,7 @@ void AcController::appendJson(String& result) {
   result += ",\"recoveryUsed\":" + String(autoCool.recoveryUsed() ? "true" : "false");
   result += ",\"recoveryAttempts\":" + String(autoCool.recoveryAttempts());
   result += ",\"recoveryBackoffSeconds\":" + String(autoCool.recoveryBackoffSeconds());
+  result += ",\"irRetriesRemaining\":" + String(automaticRepeats);
   result += ",\"cancelled\":" + String(autoCool.cancelled() ? "true" : "false");
   result += ",\"saved\":" + String((autoCoolSettingsSaved && acStateSaved) ? "true" : "false") + "}";
   result += ",\"fan\":" + String(ac.getFan());

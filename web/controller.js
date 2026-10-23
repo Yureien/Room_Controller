@@ -243,7 +243,7 @@ function render(next) {
           state.turboCooldownSeconds + 's.' : 'Monitoring temperature.') +
       (auto.recoveryAttempts ? ' Recovery attempts: ' + auto.recoveryAttempts +
         '; next Off wait ' + auto.recoveryBackoffSeconds / 60 + ' min.' : '') :
-    'Enable with AC on in Cool mode, Energy Save and Sleep off. Auto-Cool and its target are saved across restarts.';
+    'Enable with AC on in Cool mode, Energy Save and Sleep off. Auto-Cool and its target are saved across restarts. Automatic signals send 3 times, 2 seconds apart.';
   if (auto && auto.saved === false)
     $('auto-cool-status').textContent += ' Settings could not be saved to flash.';
   $('power').dataset.command = auto && auto.waiting ? 'off' : 'power toggle';

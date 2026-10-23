@@ -176,6 +176,123 @@ int main() {
   storageFailure.command("autocool on");
   storageFailure.has("\"saved\":false");
 
+  // Automatic signals are identical at 0, 2 and 4 seconds; polling/duplicate
+  // samples cause neither extra packets nor extra flash writes.
+  Rig retries;
+  retries.command("autocool on");
+  retries.read(27);
+  const auto firstBurst = packets.size();
+  const auto repeatedPacket = packets.back();
+  const auto retryWrites = fakeStorage.writes;
+  retries.has("\"irRetriesRemaining\":2");
+  retries.command("state");  // Status reads must not cancel delivery attempts.
+  retries.read(27, 1999);
+  assert(packets.size() == firstBurst);
+  retries.read(27, 1);
+  assert(packets.size() == firstBurst + 1 && packets.back() == repeatedPacket);
+  retries.has("\"irRetriesRemaining\":1");
+  retries.read(27, 1999);
+  assert(packets.size() == firstBurst + 1);
+  retries.read(27, 1);
+  assert(packets.size() == firstBurst + 2 && packets.back() == repeatedPacket);
+  retries.has("\"irRetriesRemaining\":0");
+  retries.read(27, 10000);
+  assert(packets.size() == firstBurst + 2 && fakeStorage.writes == retryWrites);
+
+  // A later settings edit supersedes old packets. Manual commands remain
+  // single sends, including an explicit Off during pending Power On retries.
+  Rig superseded;
+  superseded.command("autocool on");
+  superseded.read(27);
+  superseded.command("temp 21");
+  const auto editedPackets = packets.size();
+  superseded.read(27, 2000);
+  assert(packets.size() == editedPackets);
+  superseded.has("\"irRetriesRemaining\":0");
+
+  Rig powerRetries;
+  powerRetries.command("autocool on");
+  powerRetries.failCooling();
+  const auto offBurst = packets.size();
+  const auto offPacket = packets.back();
+  powerRetries.read(27, 2000);
+  powerRetries.read(27, 2000);
+  assert(packets.size() == offBurst + 2);
+  assert(packets[offBurst] == offPacket && packets[offBurst + 1] == offPacket);
+  powerRetries.read(27, 296000);
+  const auto onBurst = packets.size();
+  const auto originalOn = packets[onBurst - 2];
+  const auto originalTarget = packets[onBurst - 1];
+  const auto onWrites = fakeStorage.writes;
+  powerRetries.read(27, 2000);
+  assert(packets.size() == onBurst + 2);
+  assert(packets[onBurst] == originalOn && packets[onBurst + 1] == originalTarget);
+  powerRetries.read(27, 2000);
+  assert(packets.size() == onBurst + 4);
+  assert(packets[onBurst + 2] == originalOn && packets[onBurst + 3] == originalTarget);
+  assert(fakeStorage.writes == onWrites);
+  powerRetries.has("\"temperature\":20");
+  powerRetries.has("\"turbo\":false");  // Power sequence completes first.
+  powerRetries.read(27, 5000);
+  powerRetries.has("\"turbo\":true");
+
+  Rig cancelOn;
+  cancelOn.command("autocool on");
+  cancelOn.failCooling();
+  cancelOn.read(27, 300000);
+  cancelOn.command("off");
+  const auto stoppedOn = packets.size();
+  cancelOn.read(27, 10000);
+  assert(packets.size() == stoppedOn);
+  cancelOn.has("\"power\":false");
+  cancelOn.has("\"irRetriesRemaining\":0");
+
+  // A lost sensor cancels pending restart signals even after the initial On.
+  Rig cancelSensor;
+  cancelSensor.command("autocool on");
+  cancelSensor.failCooling();
+  cancelSensor.read(27, 300000);
+  const auto beforeLoss = packets.size();
+  cancelSensor.reading.status = TemperatureReading::Status::Unavailable;
+  cancelSensor.read(27, 2000);
+  assert(packets.size() == beforeLoss);
+  cancelSensor.has("\"irRetriesRemaining\":0");
+
+  // Repeated Turbo packets cannot extend the original twenty-minute limit.
+  Rig timerRetries;
+  timerRetries.command("autocool on");
+  timerRetries.read(22.8f);
+  for (int i = 0; i < 240; ++i) timerRetries.read(22.8f - i / 300.0f);
+  timerRetries.has("\"turbo\":false");
+  timerRetries.has("\"turboCooldownSeconds\":300");
+  const auto turboOff = packets.back();
+  const auto offTurboCount = packets.size();
+  timerRetries.read(22, 2000);
+  timerRetries.read(22, 2000);
+  assert(packets.size() == offTurboCount + 2 && packets.back() == turboOff);
+
+  // A stalled loop sends one burst at a time, and the retry clock wraps safely.
+  Rig stalled;
+  stalled.command("autocool on");
+  stalled.read(27);
+  const auto stallPackets = packets.size();
+  stalled.read(27, 10000);
+  assert(packets.size() == stallPackets + 1);
+  stalled.read(27, 0);
+  assert(packets.size() == stallPackets + 1);
+  stalled.read(27, 2000);
+  assert(packets.size() == stallPackets + 2);
+  Rig wrapRetries;
+  clockMs = UINT32_MAX - 6000;
+  wrapRetries.command("autocool on");
+  wrapRetries.read(27);
+  const auto wrapPackets = packets.size();
+  wrapRetries.read(27, 1999);
+  assert(packets.size() == wrapPackets);
+  wrapRetries.read(27, 1);
+  wrapRetries.read(27, 2000);
+  assert(packets.size() == wrapPackets + 2);
+
   // Both deadlines survive millis() wrapping; early Off stops tracking.
   TurboTimer timer;
   const uint32_t start = UINT32_MAX - 1000;
@@ -188,5 +305,5 @@ int main() {
   timer.sent(1, true, false);
   assert(!timer.expire(TurboTimer::kDurationMs));
   assert(beforeCount == afterCount);
-  std::puts("AcController host checks passed: Turbo, repeated recovery, target packets, cancellation, IR hooks, NVS, reboot, rollover.");
+  std::puts("AcController host checks passed: Turbo, recovery, timed packet repeats, cancellation, IR hooks, NVS, reboot, rollover.");
 }

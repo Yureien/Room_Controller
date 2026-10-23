@@ -88,6 +88,7 @@ is illustrative; it is not a statement of startup defaults.
     "recoveryUsed": false,
     "recoveryAttempts": 0,
     "recoveryBackoffSeconds": 300,
+    "irRetriesRemaining": 0,
     "cancelled": false,
     "saved": true
   },
@@ -178,6 +179,7 @@ locally without sending IR; it does not resume a session with an unknown age.
 | `recoveryUsed` | boolean | Compatibility field: `recoveryAttempts > 0`. It does not lock out another recovery. |
 | `recoveryAttempts` | integer | Attempts since sustained successful cooling, saturating at `4294967295`. Clears after a successful 15-minute measurement or five continuous minutes strictly below target while running. Manual commands preserve it; reboot clears it. |
 | `recoveryBackoffSeconds` | integer | Full current Off interval when waiting, otherwise the next attempt's Off interval: `300`, `600`, `1200`, or `1800`. Indefinite retries remain capped at 30 minutes Off. |
+| `irRetriesRemaining` | integer | `0..2` automatic transmission attempts still queued. Each automatic Turbo/recovery action sends once immediately and repeats twice at two-second intervals. A restart attempt may contain both Power On and target restoration packets. This counts delivery attempts, not AC acknowledgements. |
 | `cancelled` | boolean | Sensor loss cancelled a pending recovery; manual restart is required. |
 | `saved` | boolean | Combined latest tracked save status for AC and Auto-Cool settings. A command may succeed while this is false and `message` contains a warning. |
 
@@ -189,6 +191,13 @@ throughout the trial and less than 0.25°C cooling between its first/last
 expiry/cooldown does not interrupt observation. Missing readings, gaps longer
 than seven seconds, target edits, or returning to the hysteresis band restart
 the trial.
+
+Automatic repeats use the exact original packet sequence and count toward
+`sent`. They do not extend Turbo timers or write flash. Automatic Turbo waits
+until the Power On/target repeat sequence finishes. Accepted AC commands other
+than `state`, sensor loss, superseding automatic actions, and reboot cancel
+pending repeats. Loop delays space remaining repeats from their actual send
+time, without catch-up bursts. Manual commands are sent once.
 
 ### `lamp`
 
