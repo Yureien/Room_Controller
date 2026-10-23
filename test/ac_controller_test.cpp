@@ -36,6 +36,12 @@ struct Rig {
   }
   String state() { String result; ac.appendJson(result); return result; }
   void has(const char* field) { assert(state().find(field) != String::npos); }
+  void failCooling() {
+    read(27);
+    for (int i = 0; i < 240; ++i) read(27);
+    has("\"waiting\":true");
+    has("\"power\":false");
+  }
 };
 
 int main() {
@@ -63,7 +69,7 @@ int main() {
   const auto autoWrites = fakeStorage.writes;
   automatic.read(22);
   automatic.has("\"turbo\":true");
-  for (int i = 0; i < 240; ++i) automatic.read(22);
+  for (int i = 0; i < 240; ++i) automatic.read(22.8f - i / 300.0f);
   automatic.has("\"turbo\":false");
   automatic.has("\"turboCooldownSeconds\":300");
   for (int i = 0; i < 59; ++i) automatic.read(22);
@@ -114,6 +120,62 @@ int main() {
   assert(state.find("\"turbo\":false") != String::npos);
   assert(packets.size() == bootPackets);
 
+  // Recovery persists Off/On only, restores a sub-24 target in a separate
+  // packet, rejects early On, and can retry with a larger cooldown.
+  Rig recovery;
+  recovery.command("autocool on");
+  const auto recoveryWrites = fakeStorage.writes;
+  recovery.failCooling();
+  recovery.has("\"recoveryAttempts\":1");
+  recovery.has("\"waitSeconds\":300");
+  assert(fakeStorage.writes == recoveryWrites + 1);
+  recovery.command("on", false);
+  recovery.command("temp 21", false);
+  recovery.command("state");
+  const auto beforeRestart = packets.size();
+  recovery.read(27, 300000);
+  assert(packets.size() == beforeRestart + 2);
+  const auto& powerOn = packets[packets.size() - 2];
+  const auto& target = packets.back();
+  assert((powerOn[2] & 0x80) && (powerOn[3] & 31) == 24);
+  assert(((powerOn[10] << 8) | powerOn[11]) == kBluestarCommandPower);
+  assert((target[3] & 31) == 20);
+  assert(((target[10] << 8) | target[11]) == kBluestarCommandTemp);
+  recovery.has("\"recoveryBackoffSeconds\":600");
+  assert(fakeStorage.writes == recoveryWrites + 2);
+  for (int i = 0; i < 240; ++i) recovery.read(27);
+  recovery.has("\"waitSeconds\":600");
+  recovery.has("\"recoveryAttempts\":2");
+  const auto rebootOffPackets = packets.size();
+  AcController offBoot(23);
+  offBoot.begin(beforeIr, afterIr);
+  String offState;
+  offBoot.appendJson(offState);
+  assert(offState.find("\"enabled\":false") != String::npos);
+  assert(offState.find("\"power\":false") != String::npos);
+  assert(packets.size() == rebootOffPackets);
+  recovery.command("off");
+  const auto cancelledPackets = packets.size();
+  recovery.read(27, 1800000);
+  assert(packets.size() == cancelledPackets);
+  recovery.has("\"power\":false");
+
+  Rig sensorLoss;
+  sensorLoss.command("autocool on");
+  sensorLoss.failCooling();
+  sensorLoss.reading.status = TemperatureReading::Status::Unavailable;
+  sensorLoss.read(27);
+  sensorLoss.has("\"cancelled\":true");
+  sensorLoss.has("\"enabled\":false");
+  sensorLoss.reading.status = TemperatureReading::Status::Ready;
+  sensorLoss.read(27, 1800000);
+  sensorLoss.has("\"power\":false");
+
+  Rig storageFailure;
+  fakeStorage.fail = true;
+  storageFailure.command("autocool on");
+  storageFailure.has("\"saved\":false");
+
   // Both deadlines survive millis() wrapping; early Off stops tracking.
   TurboTimer timer;
   const uint32_t start = UINT32_MAX - 1000;
@@ -126,5 +188,5 @@ int main() {
   timer.sent(1, true, false);
   assert(!timer.expire(TurboTimer::kDurationMs));
   assert(beforeCount == afterCount);
-  std::puts("AcController host checks passed: Turbo expiry, cooldown, IR hooks, NVS, raw import, reboot, rollover.");
+  std::puts("AcController host checks passed: Turbo, repeated recovery, target packets, cancellation, IR hooks, NVS, reboot, rollover.");
 }

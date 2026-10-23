@@ -94,10 +94,13 @@ void AcController::service(const TemperatureReading& reading, bool printEvents) 
     default: return;
   }
   // Turbo transitions never write flash. Only recovery power changes update
-  // the existing saved AC state; recovery timers/latches remain in RAM.
-  if (printEvents)
+  // the existing saved AC state; recovery timers/backoff remain in RAM.
+  if (printEvents && action == AutoCool::Action::PowerOff)
+    Serial.printf("[auto-cool] Recovery attempt %lu: off for %lus; target %u C\n",
+        static_cast<unsigned long>(autoCool.recoveryAttempts()),
+        static_cast<unsigned long>(autoCool.recoveryBackoffSeconds()), autoCool.target());
+  else if (printEvents)
     Serial.printf("[auto-cool] %s; target %u C\n",
-        action == AutoCool::Action::PowerOff ? "Recovery: off for 120s" :
         action == AutoCool::Action::PowerOn ? "Recovery: restarted" :
         ac.getTurbo() ? "Turbo on" : "Turbo off", autoCool.target());
 }
@@ -250,7 +253,7 @@ bool AcController::command(String line, String *message, const TemperatureReadin
     return true;
   }
   // A queued automatic restart must never override an explicit manual Off.
-  // Prevent early restart and settings changes during the two-minute wait.
+  // Prevent early restart and settings changes during the recovery wait.
   if (autoCool.waiting() && command != "off" && command != "state") {
     *message = "Recovery cooldown active. Use off or autocool off to cancel; AC remains off.";
     return false;
@@ -419,6 +422,8 @@ void AcController::appendJson(String& result) {
   result += ",\"waiting\":" + String(autoCool.waiting() ? "true" : "false");
   result += ",\"waitSeconds\":" + String(autoCool.waitSeconds(millis()));
   result += ",\"recoveryUsed\":" + String(autoCool.recoveryUsed() ? "true" : "false");
+  result += ",\"recoveryAttempts\":" + String(autoCool.recoveryAttempts());
+  result += ",\"recoveryBackoffSeconds\":" + String(autoCool.recoveryBackoffSeconds());
   result += ",\"cancelled\":" + String(autoCool.cancelled() ? "true" : "false");
   result += ",\"saved\":" + String((autoCoolSettingsSaved && acStateSaved) ? "true" : "false") + "}";
   result += ",\"fan\":" + String(ac.getFan());

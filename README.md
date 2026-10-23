@@ -141,7 +141,7 @@ manual Turbo On starts a new session. On reboot, saved Turbo is cleared locally
 without sending IR because the previous session's elapsed time is unknown.
 
 **Auto-Cool** uses the measured room temperature to control Turbo and attempt
-one recovery if cooling stops. It requires the AC to already be on in Cool
+repeated recovery if cooling stops. It requires the AC to already be on in Cool
 mode, with Energy Save and Sleep off and a valid sensor reading. It never turns
 on an otherwise-off AC. It runs on the ESP32 even with the browser closed or
 Wi-Fi disconnected.
@@ -150,18 +150,24 @@ Wi-Fi disconnected.
   Equality at either boundary retains the current Turbo setting. The saved
   target stays independent of Turbo's 16°C operating temperature; the page
   shows the target and notes when the AC is running at 16°C. Temperature
-  buttons adjust the target and restart trend collection.
-- Recovery requires five continuous minutes above target +1.5°C with Turbo
-  active. The last 30-second average must exceed the first by at least 0.125°C,
-  and must also exceed the preceding 30-second average. Flat, falling, or
-  one-step sensor noise does not trigger recovery. A missing reading, a gap
-  longer than seven seconds, a target change, or a reading at/below target
-  +1.5°C restarts the observation window.
-- Recovery sends Power Off, waits two minutes without blocking other controller
-  work, then sends Power On and restores the target, including targets below
-  24°C that the AC library's Power command otherwise clamps. The one-recovery
-  lockout clears only on a valid reading strictly below target; button toggles
-  and manual power changes preserve it until then.
+  buttons adjust the target and restart the cooling trial.
+- Recovery requires the room to remain above target +1.5°C for a full
+  20-minute trial: five minutes settling, then 15 minutes measuring cooling.
+  The first and last 30-second averages of that measurement must show at least
+  a 0.25°C drop. Flat, rising, or insufficiently falling temperatures trigger
+  recovery. This observes normal cooling as well as Turbo and its cooldown.
+  Missing readings, a sample gap longer than seven seconds, target changes,
+  or readings at/below target +1.5°C restart the full trial. After a successful
+  measurement, the next 15-minute measurement starts without another settling
+  period. One-step sensor noise is too small to establish successful cooling.
+- Recovery sends Power Off, waits **5 → 10 → 20 → 30 minutes** on consecutive
+  attempts, then sends Power On and restores the target, including targets below
+  24°C that the AC library's Power command otherwise clamps. The Off wait stays
+  capped at 30 minutes; retries have no lifetime limit. Each restart gets a new
+  full 20-minute trial, so repeated failures cannot cause short On periods.
+  A successful 15-minute cooling measurement or five continuous minutes strictly
+  below target resets the backoff to five minutes. Off-period readings cannot
+  reset it, and manual commands/toggles preserve accumulated attempts in RAM.
 - During the wait, **Power** cancels the restart and keeps the AC off. Disabling
   Auto-Cool does the same. Other AC changes, including early Power On, are
   rejected until the wait finishes or is explicitly cancelled. Lamp control
@@ -175,13 +181,13 @@ Wi-Fi disconnected.
   Recovery updates the existing saved AC power state at Off and On, so a reboot
   during recovery leaves the AC off and does not resume a queued restart.
 - On reboot, Auto-Cool resumes temperature control only if the saved AC state
-  is On in Cool mode. Recovery trends, countdowns, and the one-recovery lockout
+  is On in Cool mode. Recovery observations, countdowns, and attempt counts
   are not persisted; a new boot starts a new observation window. No IR is sent
   during startup restoration; temperature control waits for a valid reading.
 
 The controller has no AC state feedback: changes using the physical remote
 are invisible, and an IR packet can be missed. These protections use the
-controller's last requested power state. A rising trend also cannot distinguish
+controller's last requested power state. Insufficient measured cooling cannot distinguish
 a cooling fault from increased room heat or a poorly placed sensor. Verify IR
 reception and sensor placement on the actual AC before relying on recovery.
 
@@ -521,12 +527,12 @@ g++ -std=c++11 -Wall -Wextra -Werror -pthread -Ilib/ControllerWeb/src test/web_d
 
 `python3 test/test_auto_cool_integration.py` now compiles the actual
 `AcController` against host Arduino/IR/NVS fakes. It covers Turbo expiry and
-cooldown, stored targets/fans, IR hooks, write behavior, raw imports, reboot,
-and timer rollover. It does not establish physical IR reception.
+cooldown, repeated recovery/backoff, stored targets/fans, separate Power/target
+packets, cancellation, IR hooks, write behavior, raw imports, reboot, and rollover. It does not establish physical IR reception.
 `node test/test_ac_ui.js` loads the current browser controller with DOM fakes
 and checks Turbo display/cooldown, recovery controls, and cancellation.
 
-The other Python/JavaScript harnesses still assume the former `src/` layout, inline
+The remaining Python/JavaScript harnesses still assume the former `src/` layout, inline
 page, or functions in `main.cpp`. Migrate them to library interfaces and `web/`
 assets before using them. The optional Lotus protocol reference comparison uses
 upstream Python methods without Bluetooth dependencies.

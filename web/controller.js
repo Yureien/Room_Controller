@@ -235,13 +235,14 @@ function render(next) {
   $('auto-cool-status').textContent = auto && auto.cancelled ?
     'Sensor lost during recovery. Restart cancelled; turn the AC on manually.' :
     auto && auto.waiting ? 'Recovery: AC off. Restart in ' + auto.waitSeconds +
-      's. Power or Auto-Cool cancels the restart.' :
+      's (attempt ' + auto.recoveryAttempts + '). Power or Auto-Cool cancels the restart.' :
     autoEnabled ? 'Target ' + auto.target + '°C · ' +
       (!Number.isFinite(state.measuredTemperature) || state.sensorStatus !== 'ready' ?
         'Paused: sensor unavailable.' : state.turbo ? 'Turbo cooling (20-minute limit).' :
         state.turboCooldownSeconds ? 'Normal cooling; Turbo available in ' +
           state.turboCooldownSeconds + 's.' : 'Monitoring temperature.') +
-      (auto.recoveryUsed ? ' Recovery used; another cycle requires a reading below target.' : '') :
+      (auto.recoveryAttempts ? ' Recovery attempts: ' + auto.recoveryAttempts +
+        '; next Off wait ' + auto.recoveryBackoffSeconds / 60 + ' min.' : '') :
     'Enable with AC on in Cool mode, Energy Save and Sleep off. Auto-Cool and its target are saved across restarts.';
   if (auto && auto.saved === false)
     $('auto-cool-status').textContent += ' Settings could not be saved to flash.';

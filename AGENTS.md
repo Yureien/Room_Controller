@@ -66,11 +66,12 @@ served by the ESP32, not deployed separately. IR/sensor/activity LED use GPIO
 - Auto-Cool retains its target separately from Turbo's 16°C operation. Recovery
   cannot override manual Off/cancellation; no queued restart resumes after reboot.
   The library's Power command clamps targets below 24°C: restore the target in a
-  separate packet after Power On. Preserve the tested hysteresis/trend/one-cycle contract.
+  separate packet after Power On. Preserve hysteresis, the 20-minute cooling
+  trial, capped repeat-recovery backoff, and Turbo's 20-minute/5-minute timers.
 - Preserve `partitions.csv` offsets and versioned NVS compatibility. AC/network
   use legacy namespace `ac-controller`; lamp settings use `lotus-lamp`.
   Deduplicate writes. Auto-Cool enabled/target settings persist, while history,
-  trend, and recovery latch/countdown stay in RAM. Automatic Turbo never writes
+  observation, and recovery attempts/countdown stay in RAM. Automatic Turbo never writes
   flash; recovery updates the existing saved AC power state at Off/On.
 - Sensor freshness is resolved in `TemperatureSensor::snapshot()` from monotonic
   acquisition time; discovery examines one address per turn and preserves parasite

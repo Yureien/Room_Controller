@@ -1,12 +1,14 @@
 Existing host-check inventory (preserved, not run during the October 2026 refactor)
 
-- auto_cool_test.cpp: portable hysteresis, trend, recovery, and cancellation.
+- auto_cool_test.cpp: portable hysteresis, cooling trials, endpoint averages,
+  repeat-recovery backoff/success reset, cancellation, gaps, and rollover.
 - temperature_history_test.cpp / temperature_history_api_test.cpp: ring/cursors,
   gaps, bounded pages, and formatting.
 - web_dispatch_test.cpp: threaded handoff, priority, generations, cancellation.
 - test_auto_cool_integration.py / ac_controller_test.cpp: actual AcController
   compiled with test/fakes/ac Arduino/IR/NVS dependencies; migrated after the
-  refactor and run for Turbo expiry, cooldown, commands, NVS, and reboot.
+  refactor and run for Turbo expiry/cooldown, repeat recovery, separate
+  Power/target packets, cancellation, commands, NVS, and reboot.
 - test_web_async.py: fake HTTP transport and main-loop handoff integration.
 - test_web_ui.js: browser polling, ordering, history, and lamp edit behavior.
 - test_ac_ui.js: current web/controller.js, Turbo display/cooldown and recovery

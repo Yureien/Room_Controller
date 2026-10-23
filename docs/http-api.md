@@ -86,6 +86,8 @@ is illustrative; it is not a statement of startup defaults.
     "waiting": false,
     "waitSeconds": 0,
     "recoveryUsed": false,
+    "recoveryAttempts": 0,
+    "recoveryBackoffSeconds": 300,
     "cancelled": false,
     "saved": true
   },
@@ -173,12 +175,20 @@ locally without sending IR; it does not resume a session with an unknown age.
 | `target` | integer | Separate desired target, `16..30` °C; use this for Auto-Cool's setpoint instead of Turbo's operating temperature. |
 | `waiting` | boolean | AC is in the automatic recovery cooldown before a possible restart. |
 | `waitSeconds` | integer | Remaining cooldown seconds, rounded up; `0` when not waiting. |
-| `recoveryUsed` | boolean | The one-recovery latch has been used; it clears after a valid reading below target. |
+| `recoveryUsed` | boolean | Compatibility field: `recoveryAttempts > 0`. It does not lock out another recovery. |
+| `recoveryAttempts` | integer | Attempts since sustained successful cooling, saturating at `4294967295`. Clears after a successful 15-minute measurement or five continuous minutes strictly below target while running. Manual commands preserve it; reboot clears it. |
+| `recoveryBackoffSeconds` | integer | Full current Off interval when waiting, otherwise the next attempt's Off interval: `300`, `600`, `1200`, or `1800`. Indefinite retries remain capped at 30 minutes Off. |
 | `cancelled` | boolean | Sensor loss cancelled a pending recovery; manual restart is required. |
 | `saved` | boolean | Combined latest tracked save status for AC and Auto-Cool settings. A command may succeed while this is false and `message` contains a warning. |
 
 See [Auto-Cool behavior](../README.md#room-controller-website) for hysteresis,
-trend detection, persistence, and recovery details.
+the five-minute settling plus 15-minute cooling measurement, persistence, and
+repeat-recovery details. Recovery needs a temperature above target +1.5°C
+throughout the trial and less than 0.25°C cooling between its first/last
+30-second measurement averages. Each restart receives a new full trial; Turbo
+expiry/cooldown does not interrupt observation. Missing readings, gaps longer
+than seven seconds, target edits, or returning to the hysteresis band restart
+the trial.
 
 ### `lamp`
 
