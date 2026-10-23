@@ -55,6 +55,7 @@ void SerialConsole::printHelp() {
   Serial.println(F("  capacity 100|110|80|60|40|next"));
   Serial.println(F("  horizontal|vertical|light|turbo|econo|sleep"));
   Serial.println(F("    on|off|toggle"));
+  Serial.println(F("    Turbo expires after 20 minutes; automatic retry waits 5 minutes."));
   Serial.println(F("  state / send / load <24 hexadecimal digits> / help"));
   Serial.println(F("  sensor   (measured temperature on GPIO 22; updates every 5s)"));
   Serial.println(F("  autocool on|off|toggle (AC on in Cool mode; valid sensor required)"));

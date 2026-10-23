@@ -238,7 +238,9 @@ function render(next) {
       's. Power or Auto-Cool cancels the restart.' :
     autoEnabled ? 'Target ' + auto.target + '°C · ' +
       (!Number.isFinite(state.measuredTemperature) || state.sensorStatus !== 'ready' ?
-        'Paused: sensor unavailable.' : state.turbo ? 'Turbo cooling.' : 'Monitoring temperature.') +
+        'Paused: sensor unavailable.' : state.turbo ? 'Turbo cooling (20-minute limit).' :
+        state.turboCooldownSeconds ? 'Normal cooling; Turbo available in ' +
+          state.turboCooldownSeconds + 's.' : 'Monitoring temperature.') +
       (auto.recoveryUsed ? ' Recovery used; another cycle requires a reading below target.' : '') :
     'Enable with AC on in Cool mode, Energy Save and Sleep off. Auto-Cool and its target are saved across restarts.';
   if (auto && auto.saved === false)

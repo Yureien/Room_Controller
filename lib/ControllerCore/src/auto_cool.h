@@ -35,7 +35,8 @@ class AutoCool {
   }
 
   Action update(uint32_t now, uint32_t sampleTime, bool available,
-                float celsius, bool power, bool coolMode, bool turbo) {
+                float celsius, bool power, bool coolMode, bool turbo,
+                bool turboAllowed = true) {
     if (available && std::isfinite(celsius) && celsius >= -55 &&
         celsius <= 125 && celsius < target_) recoveryUsed_ = false;
     if (!enabled_) return Action::None;
@@ -73,6 +74,7 @@ class AutoCool {
     }
     if (!turbo) {
       resetTrend();
+      if (!turboAllowed) return Action::None;
       addSample(now, celsius);
       return Action::TurboOn;
     }

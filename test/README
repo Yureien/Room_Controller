@@ -4,15 +4,20 @@ Existing host-check inventory (preserved, not run during the October 2026 refact
 - temperature_history_test.cpp / temperature_history_api_test.cpp: ring/cursors,
   gaps, bounded pages, and formatting.
 - web_dispatch_test.cpp: threaded handoff, priority, generations, cancellation.
-- test_auto_cool_integration.py: extracted AC integration with fake IR/NVS.
+- test_auto_cool_integration.py / ac_controller_test.cpp: actual AcController
+  compiled with test/fakes/ac Arduino/IR/NVS dependencies; migrated after the
+  refactor and run for Turbo expiry, cooldown, commands, NVS, and reboot.
 - test_web_async.py: fake HTTP transport and main-loop handoff integration.
 - test_web_ui.js: browser polling, ordering, history, and lamp edit behavior.
+- test_ac_ui.js: current web/controller.js, Turbo display/cooldown and recovery
+  controls with DOM fakes; run with node test/test_ac_ui.js.
 - test_lotus_protocol.py: portable packet parsing/encoding, optional Python reference.
 - test_lotus_worker.py: actual worker source compiled against dependency fakes;
   brought forward from the earlier session, with final latch changes unverified.
 
 Migration is deferred, not complete. Native headers moved to
-lib/ControllerCore/src and lib/ControllerWeb/src. Python/JavaScript scripts still
+lib/ControllerCore/src and lib/ControllerWeb/src. Except for the AC integration
+runner and test_ac_ui.js above, Python/JavaScript scripts still
 refer to the old src paths, inline web_ui.h, and/or functions extracted from
 main.cpp. Update them to the new class interfaces and web/ sources before reuse;
 BLE fakes also need the split worker/session and teardown API. No replacement

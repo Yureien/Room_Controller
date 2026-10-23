@@ -35,6 +35,7 @@ void AcController::begin(void (*before)(), void (*after)()) {
 void AcController::sendAcPacket() {
   if (beforeIr) beforeIr();
   ac.send();
+  turboTimer.sent(millis(), ac.getPower(), ac.getTurbo());
   ++commandsSent;
   if (afterIr) afterIr();
 }
@@ -57,10 +58,18 @@ void AcController::stopAutoCool() {
 }
 
 void AcController::service(const TemperatureReading& reading, bool printEvents) {
+  const uint32_t now = millis();
+  if (turboTimer.expire(now)) {
+    ac.setTurbo(false);
+    sendAcPacket();
+    if (autoCool.enabled()) restoreAutoCoolTarget();
+    else saveAcState();
+    if (printEvents) Serial.println(F("Turbo off: 20-minute limit; automatic Turbo paused for 5 minutes."));
+  }
   const AutoCool::Action action = autoCool.update(
-      millis(), reading.sampledAtSeconds, reading.available(),
+      now, reading.sampledAtSeconds, reading.available(),
       reading.celsius, ac.getPower(), ac.getMode() == kBluestarCool,
-      ac.getTurbo());
+      ac.getTurbo(), turboTimer.cooldownSeconds(now) == 0);
   switch (action) {
     case AutoCool::Action::TurboOn:
     case AutoCool::Action::TurboOff:
@@ -115,6 +124,9 @@ void AcController::loadAcState() {
   normalFan = saved.normalFan;
   lastSavedAcState = saved;
   haveSavedAcState = true;
+  // The elapsed time of a saved session is unknown. Restore normal settings
+  // without transmitting or starting a fresh Turbo session on boot.
+  if (ac.getTurbo()) ac.setTurbo(false);
   Serial.println(F("Restored saved AC settings; no IR sent."));
 }
 
@@ -364,6 +376,7 @@ bool AcController::command(String line, String *message, const TemperatureReadin
     }
     normalFan = rememberedFan(ac.getFan());
     autoCool.disable();
+    turboTimer.sent(millis(), false, false);  // Imported state is inert until sent.
     transmit = false;
   } else if ((command == "state" || command == "send") && !value.length()) {
     transmit = command == "send";
@@ -414,6 +427,7 @@ void AcController::appendJson(String& result) {
   result += ",\"vertical\":" + String(ac.getSwingV() ? "true" : "false");
   result += ",\"light\":" + String(ac.getLight() ? "true" : "false");
   result += ",\"turbo\":" + String(ac.getTurbo() ? "true" : "false");
+  result += ",\"turboCooldownSeconds\":" + String(turboTimer.cooldownSeconds(millis()));
   result += ",\"econo\":" + String(ac.getEcono() ? "true" : "false");
   result += ",\"sleep\":" + String(ac.getSleep() ? "true" : "false");
   result += ",\"sent\":" + String(commandsSent);

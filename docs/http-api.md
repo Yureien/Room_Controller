@@ -95,6 +95,7 @@ is illustrative; it is not a statement of startup defaults.
   "vertical": true,
   "light": true,
   "turbo": false,
+  "turboCooldownSeconds": 0,
   "econo": false,
   "sleep": false,
   "sent": 12,
@@ -150,6 +151,7 @@ new enough to replace displayed state.
 | `horizontal`, `vertical` | boolean | Requested horizontal/vertical swing. |
 | `light` | boolean | Requested AC display light; unrelated to the LED strip. |
 | `turbo`, `econo`, `sleep` | boolean | Requested standalone Turbo, Energy Save, and Sleep modes. |
+| `turboCooldownSeconds` | integer | Remaining automatic Turbo cooldown, rounded up; `0` when eligible. Turbo expires after 20 minutes and Auto-Cool waits five minutes before another session. Normal cooling continues during this wait; manual Turbo On can start a fresh session. |
 | `sent` | integer | IR send-call count since boot, including serial and automatic actions. One command can produce multiple sends. It is not an AC acknowledgement counter. |
 | `measuredTemperature` | number or null | Latest valid, fresh DS18B20 reading in °C, reported to two decimal places; `null` when waiting/unavailable. |
 | `sensorStatus` | string | `waiting`, `ready`, or `unavailable`. Readings older than seven seconds are treated as unavailable. |
@@ -158,6 +160,10 @@ new enough to replace displayed state.
 AC values describe the controller's stored/requested state. There is no physical
 AC feedback: the remote and missed IR packets are invisible. Raw state imports
 can preserve opaque/native values; clients should tolerate unknown numeric codes.
+Standalone Turbo expiry is serviced by the ESP32 without a browser or fresh
+sensor reading. Unrelated commands and Send Again do not extend its timer.
+Imported Turbo starts timing when transmitted. Startup clears saved Turbo
+locally without sending IR; it does not resume a session with an unknown age.
 
 ### `autoCool`
 

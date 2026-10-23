@@ -5,6 +5,7 @@
 #include <IRremoteESP8266.h>
 #include <ir_Bluestar.h>
 #include "auto_cool.h"
+#include "turbo_timer.h"
 #include "temperature_reading.h"
 
 // Single main-loop owner. Hooks bracket every physical packet, including recovery.
@@ -42,6 +43,7 @@ class AcController {
   IRBluestarAc ac;
   const uint16_t irPin;
   AutoCool autoCool;
+  TurboTimer turboTimer;
   Preferences storage;
   bool storageReady = false;
   SavedAcState lastSavedAcState{};

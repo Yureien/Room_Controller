@@ -132,6 +132,14 @@ Light, and Send Again. Cycle controls follow the physical remote:
 - Capacity: 100% → 110% Turbo → 80% → 60% → 40% → 100%.
 
 AC buttons transmit immediately; Fan-only disables temperature adjustment.
+Standalone Turbo expires after 20 minutes: the ESP32 sends Turbo Off and the
+web remote returns to the stored temperature/fan settings. This timer runs
+without a browser or sensor. Other settings edits and Send Again do not extend
+the session. Auto-Cool waits five minutes in normal cooling after expiry before
+it can enable Turbo again if the room remains above target +1.5°C. An explicit
+manual Turbo On starts a new session. On reboot, saved Turbo is cleared locally
+without sending IR because the previous session's elapsed time is unknown.
+
 **Auto-Cool** uses the measured room temperature to control Turbo and attempt
 one recovery if cooling stops. It requires the AC to already be on in Cool
 mode, with Energy Save and Sleep off and a valid sensor reading. It never turns
@@ -511,7 +519,14 @@ g++ -std=c++11 -Wall -Wextra -Werror -Ilib/ControllerCore/src test/auto_cool_tes
 g++ -std=c++11 -Wall -Wextra -Werror -pthread -Ilib/ControllerWeb/src test/web_dispatch_test.cpp -o /tmp/room-web-dispatch-test
 ```
 
-The Python/JavaScript harnesses still assume the former `src/` layout, inline
+`python3 test/test_auto_cool_integration.py` now compiles the actual
+`AcController` against host Arduino/IR/NVS fakes. It covers Turbo expiry and
+cooldown, stored targets/fans, IR hooks, write behavior, raw imports, reboot,
+and timer rollover. It does not establish physical IR reception.
+`node test/test_ac_ui.js` loads the current browser controller with DOM fakes
+and checks Turbo display/cooldown, recovery controls, and cancellation.
+
+The other Python/JavaScript harnesses still assume the former `src/` layout, inline
 page, or functions in `main.cpp`. Migrate them to library interfaces and `web/`
 assets before using them. The optional Lotus protocol reference comparison uses
 upstream Python methods without Bluetooth dependencies.
