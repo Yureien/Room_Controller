@@ -72,6 +72,38 @@ power source. Concurrent radio/IR activity can expose a marginal supply.
 Keep brownout protection enabled. See
 [Espressif's brownout explanation](https://docs.espressif.com/projects/esp-idf/en/v4.4.5/esp32/api-guides/fatal-errors.html#brownout).
 
+### Upload and startup troubleshooting
+
+Uploads use 115200 baud instead of the board's 460800-baud default to reduce
+USB/UART transfer failures. Close other serial monitors before uploading. If
+`Stub running...` appears, the ROM connection and stub upload succeeded;
+subsequent flash warnings/timeouts need transfer, power, and wiring checks.
+A varying crystal report (normally 40 MHz on this board) is a diagnostic clue,
+not a reason to change CPU/crystal settings. The installed esptool estimates
+the crystal from the UART divider.
+
+Try a short known-good USB data cable directly into the computer, and compare
+with external hardware disconnected (power down before changing wiring).
+Check EN/GPIO0 reset wiring, GPIO2's boot strap, and GPIO12: pulling GPIO12 high
+at reset can select 1.8 V for a flash chip that needs 3.3 V. Keep GPIO6–11 free
+of external connections. If automatic reset remains unreliable, inspect the
+board's reset circuit; Espressif documents EN-to-GND capacitance of 1–10 µF for
+the standard transistor circuit. See
+[esptool troubleshooting](https://docs.espressif.com/projects/esptool/en/latest/esp32/troubleshooting.html)
+and [boot mode/reset guidance](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html).
+
+For manual download entry, hold **BOOT/FLASH**, press and release **EN/RST**,
+and release BOOT once esptool connects. Do not hold or press EN during transfer.
+After an unsuccessful upload, firmware may be incomplete. To diagnose an
+unreachable website, open the 115200-baud monitor and press/release EN with
+BOOT released. `DOWNLOAD_BOOT`/`waiting for download` means the application is
+not running; flash-header/read errors indicate a boot/flash problem. Repeated
+`[boot]` lines, brownouts, or panic output need investigation before networking.
+The blue LED starts On and is updated by the main loop; a steady LED alone
+does not identify the fault. If startup completes, use `wifi status` and the
+currently printed IP address. Keep the boot log for diagnosis before erasing
+settings or changing firmware behavior.
+
 ## Wi-Fi and address setup
 
 On first boot, serial prompts for SSID and password. Enter each on its own
